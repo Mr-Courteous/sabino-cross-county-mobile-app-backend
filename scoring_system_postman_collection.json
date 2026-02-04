@@ -1,0 +1,343 @@
+{
+  "info": {
+    "name": "Sabino Scoring System API",
+    "description": "Comprehensive testing collection for the Educational Data Model Scoring System",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Score Entry",
+      "item": [
+        {
+          "name": "Create Single Score",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"studentId\": 1,\n  \"subjectId\": 5,\n  \"classId\": 3,\n  \"academicYear\": \"2023/2024\",\n  \"term\": 1,\n  \"ca1Score\": 15,\n  \"ca2Score\": 18,\n  \"ca3Score\": 14,\n  \"ca4Score\": 16,\n  \"examScore\": 35,\n  \"teacherRemark\": \"Excellent performance\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/scores/record",
+              "host": ["{{base_url}}"],
+              "path": ["api", "scores", "record"]
+            }
+          }
+        },
+        {
+          "name": "Bulk Upsert Scores",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"scores\": [\n    {\n      \"studentId\": 1,\n      \"subjectId\": 5,\n      \"classId\": 3,\n      \"academicYear\": \"2023/2024\",\n      \"term\": 1,\n      \"ca1Score\": 15,\n      \"ca2Score\": 18,\n      \"ca3Score\": 14,\n      \"ca4Score\": 16,\n      \"examScore\": 35,\n      \"teacherRemark\": \"Good\"\n    },\n    {\n      \"studentId\": 2,\n      \"subjectId\": 5,\n      \"classId\": 3,\n      \"academicYear\": \"2023/2024\",\n      \"term\": 1,\n      \"ca1Score\": 12,\n      \"ca2Score\": 14,\n      \"ca3Score\": 13,\n      \"ca4Score\": 15,\n      \"examScore\": 32,\n      \"teacherRemark\": \"Fair\"\n    },\n    {\n      \"studentId\": 3,\n      \"subjectId\": 5,\n      \"classId\": 3,\n      \"academicYear\": \"2023/2024\",\n      \"term\": 1,\n      \"ca1Score\": 18,\n      \"ca2Score\": 19,\n      \"ca3Score\": 17,\n      \"ca4Score\": 20,\n      \"examScore\": 38,\n      \"teacherRemark\": \"Outstanding\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/scores/bulk-upsert",
+              "host": ["{{base_url}}"],
+              "path": ["api", "scores", "bulk-upsert"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Score Retrieval",
+      "item": [
+        {
+          "name": "Get Class Score Sheet",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/scores/class-sheet?classId=3&subjectId=5&academicYear=2023/2024&term=1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "scores", "class-sheet"],
+              "query": [
+                {
+                  "key": "classId",
+                  "value": "3"
+                },
+                {
+                  "key": "subjectId",
+                  "value": "5"
+                },
+                {
+                  "key": "academicYear",
+                  "value": "2023/2024"
+                },
+                {
+                  "key": "term",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Student All Scores",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/scores/student/1?academicYear=2023/2024",
+              "host": ["{{base_url}}"],
+              "path": ["api", "scores", "student", "1"],
+              "query": [
+                {
+                  "key": "academicYear",
+                  "value": "2023/2024"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Term Summary",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/scores/term-summary?classId=3&academicYear=2023/2024&term=1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "scores", "term-summary"],
+              "query": [
+                {
+                  "key": "classId",
+                  "value": "3"
+                },
+                {
+                  "key": "academicYear",
+                  "value": "2023/2024"
+                },
+                {
+                  "key": "term",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Report Cards",
+      "item": [
+        {
+          "name": "Get Single Report Card",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/scores/report-card/single/1?academicYear=2023/2024&term=1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "scores", "report-card", "single", "1"],
+              "query": [
+                {
+                  "key": "academicYear",
+                  "value": "2023/2024"
+                },
+                {
+                  "key": "term",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Generate Bulk Report Cards",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"studentIds\": [1, 2, 3, 4, 5],\n  \"academicYear\": \"2023/2024\",\n  \"term\": 1\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/scores/report-cards/bulk",
+              "host": ["{{base_url}}"],
+              "path": ["api", "scores", "report-cards", "bulk"]
+            }
+          }
+        },
+        {
+          "name": "Get Class Summary Report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/scores/report-cards/class-summary?classId=3&academicYear=2023/2024&term=1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "scores", "report-cards", "class-summary"],
+              "query": [
+                {
+                  "key": "classId",
+                  "value": "3"
+                },
+                {
+                  "key": "academicYear",
+                  "value": "2023/2024"
+                },
+                {
+                  "key": "term",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Analytics",
+      "item": [
+        {
+          "name": "Get Subject Analytics",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/scores/analytics/subject?subjectId=5&academicYear=2023/2024&term=1&classId=3",
+              "host": ["{{base_url}}"],
+              "path": ["api", "scores", "analytics", "subject"],
+              "query": [
+                {
+                  "key": "subjectId",
+                  "value": "5"
+                },
+                {
+                  "key": "academicYear",
+                  "value": "2023/2024"
+                },
+                {
+                  "key": "term",
+                  "value": "1"
+                },
+                {
+                  "key": "classId",
+                  "value": "3"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Score Management",
+      "item": [
+        {
+          "name": "Update Score Record",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ca1Score\": 16,\n  \"ca2Score\": 19,\n  \"ca3Score\": 15,\n  \"ca4Score\": 17,\n  \"examScore\": 37,\n  \"teacherRemark\": \"Improved performance\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/scores/1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "scores", "1"]
+            }
+          }
+        },
+        {
+          "name": "Delete Score Record",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/scores/1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "scores", "1"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "token",
+      "value": "your_jwt_token_here"
+    }
+  ]
+}
