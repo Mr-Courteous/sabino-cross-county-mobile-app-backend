@@ -400,6 +400,8 @@ router.post('/login', async (req, res) => {
  *            newPassword: String (optional)
  *          }
  */
+
+
 /**
  * @route   GET /api/students/me/enrollments
  * @desc    Get logged-in student's enrollment history
@@ -414,20 +416,22 @@ router.get('/me/enrollments', authMiddleware.authenticateToken, async (req, res)
     const studentId = req.user.studentId;
     const schoolId = req.user.schoolId;
 
+    // Use academic_years table and select both label and name as provided
     const query = `
       SELECT 
         e.id as enrollment_id,
         ay.id as session_id,
+        ay.year_label as academic_year_label,
         ay.session_name as academic_session,
         e.status as enrollment_status,
         e.class_id,
-        c.class_name,
+        gct.display_name as class_name,
         e.created_at
       FROM enrollments e
-      JOIN classes c ON e.class_id = c.id
-      JOIN academic_sessions ay ON e.session_id = ay.id
+      JOIN global_class_templates gct ON e.class_id = gct.id
+      JOIN academic_years ay ON e.session_id = ay.id
       WHERE e.student_id = $1 AND e.school_id = $2
-      ORDER BY ay.session_name DESC, e.created_at DESC`;
+      ORDER BY ay.year_label DESC, e.created_at DESC`;
 
     const result = await pool.query(query, [studentId, schoolId]);
 
@@ -437,11 +441,16 @@ router.get('/me/enrollments', authMiddleware.authenticateToken, async (req, res)
       count: result.rowCount
     });
   } catch (error) {
-    console.error('My Enrollments Error:', error);
+    console.error('My Enrollments Error:', error.message); // Log full error for debugging
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
+/**
+ * @route   GET /api/students/me/enrollments/:sessionId
+ * @desc    Get details for a specific session enrollment
+ * @access  Private (Student)
+ */
 router.get('/me/enrollments/:sessionId', authMiddleware.authenticateToken, async (req, res) => {
   try {
     if (req.user?.type !== 'student') {
@@ -456,14 +465,15 @@ router.get('/me/enrollments/:sessionId', authMiddleware.authenticateToken, async
       SELECT 
         e.id as enrollment_id,
         ay.id as session_id,
+        ay.year_label as academic_year_label,
         ay.session_name as academic_session,
         e.status as enrollment_status,
         e.class_id,
-        c.class_name,
+        gct.display_name as class_name,
         e.created_at
       FROM enrollments e
-      JOIN classes c ON e.class_id = c.id
-      JOIN academic_sessions ay ON e.session_id = ay.id
+      JOIN global_class_templates gct ON e.class_id = gct.id
+      JOIN academic_years ay ON e.session_id = ay.id
       WHERE e.student_id = $1 AND e.school_id = $2 AND ay.id = $3
       ORDER BY e.created_at DESC`;
 
@@ -475,10 +485,11 @@ router.get('/me/enrollments/:sessionId', authMiddleware.authenticateToken, async
       count: result.rowCount
     });
   } catch (error) {
-    console.error('Session Enrollments Error:', error);
+    console.error('Session Enrollments Error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
 
 router.put('/profile', authMiddleware.authenticateToken, async (req, res) => {
   const client = await pool.connect();
@@ -698,7 +709,7 @@ router.post('/bulk', authMiddleware.authenticateToken, async (req, res) => {
       const studentId = studentInsert.rows[0].id;
 
       // 2. Insert Enrollment with the school's actual class_id (from classes table)
-      // using the session_id (from academic_sessions table)
+      // using the session_id (from academic_years table)
       const enrollmentInsert = await client.query(
         `INSERT INTO enrollments (school_id, student_id, class_id, session_id, status)
          VALUES ($1, $2, $3, $4, 'active') RETURNING id`,
@@ -806,10 +817,9 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
     //   });
     // }
 
-    // Get school's active session
+    // Get school's active session from academic_years
     const sessionResult = await client.query(
-      'SELECT id FROM academic_sessions WHERE school_id = $1 AND is_active = true LIMIT 1',
-      [schoolId]
+      'SELECT id FROM academic_years WHERE is_active = true LIMIT 1'
     );
 
     if (sessionResult.rows.length === 0) {
@@ -817,7 +827,7 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Configuration Error',
-        error: 'No active academic session found for your school. Please set up an active session first.'
+        error: 'No active academic year found. Please set up an active academic year first.'
       });
     }
 
@@ -1009,16 +1019,16 @@ router.get('/:studentId', authMiddleware.authenticateToken, async (req, res) => 
     const enrollmentResult = await pool.query(
       `SELECT 
           e.id as enrollment_id,
-          s.session_name as academic_session,
+          ay.session_name as academic_session,
           e.status,
           c.class_name,
           e.created_at,
           e.updated_at
         FROM enrollments e
         JOIN classes c ON e.class_id = c.id
-        JOIN academic_sessions s ON e.session_id = s.id
+        JOIN academic_years ay ON e.session_id = ay.id
         WHERE e.student_id = $1 AND e.school_id = $2
-        ORDER BY s.session_name DESC`,
+        ORDER BY ay.year_label DESC`,
       [studentId, schoolId]
     );
 
@@ -1117,7 +1127,7 @@ router.delete('/:studentId', authMiddleware.authenticateToken, async (req, res) 
  * @body    {
  *            studentId: Number,
  *            classId: Number,
- *            sessionId: Number (ID from academic_sessions table),
+ *            sessionId: Number (ID from academic_years table),
  *            status: String (optional: "active", "promoted", "repeated", "transferred", "graduated")
  *          }
  */
@@ -1172,10 +1182,10 @@ router.post('/enrollments/create', authMiddleware.authenticateToken, async (req,
       });
     }
 
-    // Verify academic session belongs to school
+    // Verify academic session belongs to global academic_years
     const sessionCheck = await pool.query(
-      'SELECT id FROM academic_sessions WHERE id = $1 AND school_id = $2',
-      [sessionId, schoolId]
+      'SELECT id FROM academic_years WHERE id = $1',
+      [sessionId]
     );
 
     if (sessionCheck.rows.length === 0) {
@@ -1224,7 +1234,7 @@ router.post('/enrollments/create', authMiddleware.authenticateToken, async (req,
  *              {
  *                studentId: Number,
  *                classId: Number,
- *                sessionId: Number (ID from academic_sessions table),
+ *                sessionId: Number (ID from academic_years table),
  *                status: String (optional)
  *              },
  *              ...more enrollments
@@ -1307,7 +1317,7 @@ router.post('/enrollments/bulk', authMiddleware.authenticateToken, async (req, r
  * @desc    Get all enrollments for a specific class in an academic session
  * @access  Private
  * @query   {
- *            sessionId: Number (required, ID from academic_sessions table)
+ *            sessionId: Number (required, ID from academic_years table)
  *          }
  */
 router.get('/enrollments/class/:classId', authMiddleware.authenticateToken, async (req, res) => {
@@ -1331,13 +1341,13 @@ router.get('/enrollments/class/:classId', authMiddleware.authenticateToken, asyn
         s.first_name,
         s.last_name,
         s.registration_number,
-        a.session_name as academic_session,
+        ay.session_name as academic_session,
         e.status,
         e.created_at,
         e.updated_at
       FROM enrollments e
       JOIN students s ON e.student_id = s.id
-      JOIN academic_sessions a ON e.session_id = a.id
+      JOIN academic_years ay ON e.session_id = ay.id
       WHERE e.class_id = $1 AND e.school_id = $2 AND e.session_id = $3
       ORDER BY s.last_name ASC, s.first_name ASC`,
       [classId, schoolId, sessionId]
@@ -1387,7 +1397,7 @@ router.get('/:studentId/enrollments', authMiddleware.authenticateToken, async (r
     const result = await pool.query(
       `SELECT
         e.id as enrollment_id,
-        a.session_name as academic_session,
+        ay.session_name as academic_session,
         e.status,
         c.id as class_id,
         c.class_name,
@@ -1395,9 +1405,9 @@ router.get('/:studentId/enrollments', authMiddleware.authenticateToken, async (r
         e.updated_at
       FROM enrollments e
       JOIN classes c ON e.class_id = c.id
-      JOIN academic_sessions a ON e.session_id = a.id
+      JOIN academic_years ay ON e.session_id = ay.id
       WHERE e.student_id = $1 AND e.school_id = $2
-      ORDER BY a.session_name DESC`,
+      ORDER BY ay.year_label DESC`,
       [studentId, schoolId]
     );
 

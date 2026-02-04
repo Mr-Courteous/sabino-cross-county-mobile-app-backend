@@ -804,8 +804,8 @@ router.get('/my-grades', async (req, res) => {
     const query = `
       SELECT 
         s.id as score_id,
-        sub.subject_name,
-        sub.subject_code,
+        COALESCE(sub.subject_name, 'Unknown Subject') as subject_name,
+        COALESCE(sub.subject_code, '') as subject_code,
         s.ca1_score,
         s.ca2_score,
         s.ca3_score,
@@ -814,15 +814,28 @@ router.get('/my-grades', async (req, res) => {
         s.total_score,
         s.teacher_remark,
         e.id as enrollment_id,
-        c.class_name
-      FROM scores s
-      JOIN enrollments e ON s.enrollment_id = e.id
-      JOIN subjects sub ON s.subject_id = sub.id
-      JOIN classes c ON e.class_id = c.id
-      WHERE e.student_id = $1 
-        AND e.school_id = $2 
-        AND s.term = $3 
+        c.display_name as class_name,
+        s.total_score as student_total,
+        (
+          SELECT ROUND(AVG(s2.total_score), 1)
+          FROM scores s2
+          JOIN enrollments e2 ON s2.enrollment_id = e2.id
+          WHERE s2.subject_id = s.subject_id
+            AND e2.class_id = e.class_id
+            AND s2.term = s.term
+            AND s2.session_id = s.session_id
+        ) as class_average
+      FROM enrollments e
+      JOIN global_class_templates c ON e.class_id = c.id
+      LEFT JOIN scores s ON s.enrollment_id = e.id
+        AND s.term = $3
+        AND s.session_id = $4
+        AND s.school_id = $2
+      LEFT JOIN subjects sub ON s.subject_id = sub.id
+      WHERE e.student_id = $1
+        AND e.school_id = $2
         AND e.session_id = $4
+        AND s.id IS NOT NULL
       ORDER BY sub.subject_name ASC`;
 
     const result = await pool.query(query, [studentId, schoolId, term, sessionId]);
@@ -856,9 +869,9 @@ router.get('/my-grades', async (req, res) => {
           position, 
           total_students, 
           student_total_score,
-          (SELECT AVG(total_score) FROM scores WHERE enrollment_id = $1 AND term = $2) as average_score,
-          (SELECT COUNT(*) FROM scores WHERE enrollment_id = $1 AND term = $2 AND total_score >= 50) as subjects_passed,
-          (SELECT COUNT(*) FROM scores WHERE enrollment_id = $1 AND term = $2 AND total_score < 50) as subjects_failed
+          (SELECT AVG(total_score) FROM scores WHERE enrollment_id = $1 AND term = $2 AND session_id = $3) as average_score,
+          (SELECT COUNT(*) FROM scores WHERE enrollment_id = $1 AND term = $2 AND session_id = $3 AND total_score >= 50) as subjects_passed,
+          (SELECT COUNT(*) FROM scores WHERE enrollment_id = $1 AND term = $2 AND session_id = $3 AND total_score < 50) as subjects_failed
         FROM Ranked
         WHERE enrollment_id = $1`;
 

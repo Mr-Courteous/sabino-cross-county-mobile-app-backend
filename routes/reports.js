@@ -114,7 +114,7 @@ router.get('/download/official-report/:enrollmentId', async (req, res) => {
         pref.theme_color, 
         pref.header_text,
         c.display_name as class_name,
-        sub.subject_name as subject_name,
+        COALESCE(sub.subject_name, 'Unknown Subject') as subject_name,
         COALESCE(sc.ca1_score, 0) as ca1_score,
         COALESCE(sc.ca2_score, 0) as ca2_score,
         COALESCE(sc.ca3_score, 0) as ca3_score,
@@ -122,19 +122,20 @@ router.get('/download/official-report/:enrollmentId', async (req, res) => {
         COALESCE(sc.exam_score, 0) as exam_score,
         COALESCE(sc.total_score, 0) as total_score,
         COALESCE(sc.teacher_remark, '') as teacher_remark,
-        COALESCE(sess.session_name, '') as session_name
+        COALESCE(ay.session_name, '') as session_name
       FROM enrollments e
       JOIN students s ON e.student_id = s.id
       JOIN schools sch ON s.school_id = sch.id
       LEFT JOIN school_preferences pref ON pref.school_id = sch.id
-      JOIN classes c ON e.class_id = c.id
-      JOIN scores sc ON sc.enrollment_id = e.id
-      JOIN subjects sub ON sc.subject_id = sub.id
-      LEFT JOIN academic_sessions sess ON e.session_id = sess.id
-      WHERE e.id = $1 
-        AND e.school_id = $2 
+      LEFT JOIN global_class_templates c ON e.class_id = c.id
+      LEFT JOIN scores sc ON sc.enrollment_id = e.id
         AND sc.term = $3 
-        AND e.session_id = $4
+        AND sc.session_id = $4
+      LEFT JOIN subjects sub ON sc.subject_id = sub.id
+      LEFT JOIN academic_years ay ON sc.session_id = ay.id
+      WHERE e.id = $1 
+        AND e.school_id = $2
+        AND sc.id IS NOT NULL
       ORDER BY sub.subject_name ASC
     `;
 
@@ -164,18 +165,18 @@ router.get('/download/official-report/:enrollmentId', async (req, res) => {
 
       // Debug: Check if enrollment exists
       const enrollmentCheck = await pool.query(
-        `SELECT e.id, e.student_id, e.class_id, e.school_id, s.first_name FROM enrollments e 
+        `SELECT e.id, e.student_id, e.class_id, e.school_id, e.session_id, s.first_name FROM enrollments e 
          JOIN students s ON e.student_id = s.id WHERE e.id = $1 AND e.school_id = $2`,
         [enrollmentId, schoolId]
       );
       console.log(`Enrollment check:`, enrollmentCheck.rows);
 
-      // Debug: Check if scores exist
+      // Debug: Check if scores exist for this term
       const scoresCheck = await pool.query(
-        `SELECT COUNT(*) as count FROM scores WHERE enrollment_id = $1 AND term = $2`,
-        [enrollmentId, termInt]
+        `SELECT COUNT(*) as count FROM scores WHERE enrollment_id = $1 AND term = $2 AND session_id = $3`,
+        [enrollmentId, termInt, sessionIdInt]
       );
-      console.log(`Scores check:`, scoresCheck.rows);
+      console.log(`Scores check (term=${termInt}, session=${sessionIdInt}):`, scoresCheck.rows);
 
       return res.status(404).json({
         success: false,
@@ -495,7 +496,7 @@ router.get('/search/students', async (req, res) => {
       SELECT e.id as enrollment_id, s.first_name, s.last_name, g.display_name as class_name
       FROM students s
       JOIN enrollments e ON e.student_id = s.id
-      JOIN classes g ON e.class_id = g.id
+      JOIN global_class_templates g ON e.class_id = g.id
       WHERE s.school_id = $1 
         AND (s.first_name ILIKE $2 OR s.last_name ILIKE $2)
         AND e.status = 'active'
@@ -687,7 +688,7 @@ router.get('/data/class/:classId', async (req, res) => {
       LEFT JOIN scores s ON s.enrollment_id = e.id 
                          AND s.term = $3 
                          AND s.session_id = $4
-      LEFT JOIN global_subjects g ON s.subject_id = g.id
+      LEFT JOIN subjects g ON s.subject_id = g.id
       LEFT JOIN enrollments e2 ON e2.class_id = e.class_id 
                                AND e2.session_id = e.session_id
       LEFT JOIN scores s2 ON s2.enrollment_id = e2.id 

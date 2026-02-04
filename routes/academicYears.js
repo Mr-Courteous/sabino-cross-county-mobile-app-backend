@@ -12,9 +12,9 @@ router.get('/', async (req, res) => {
     const schoolId = req.user?.schoolId;
 
     if (!schoolId) {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Authentication context missing. Please login again.' 
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication context missing. Please login again.'
       });
     }
 
