@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS schools (
   email VARCHAR(255),
   logo_url VARCHAR(500),
   stamp_url VARCHAR(500),
+  is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -208,6 +209,27 @@ CREATE INDEX IF NOT EXISTS idx_scores_school_term ON scores(school_id, term);
 CREATE INDEX IF NOT EXISTS idx_countries_code ON countries(code);
 CREATE INDEX IF NOT EXISTS idx_global_templates_country ON global_class_templates(country_id);
 CREATE INDEX IF NOT EXISTS idx_global_templates_code ON global_class_templates(class_code);
+
+-- Payment Transactions Table (audit trail for all payments)
+CREATE TABLE IF NOT EXISTS payment_transactions (
+  id SERIAL PRIMARY KEY,
+  school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+  plan_id INTEGER REFERENCES subscription_plans(id) ON DELETE SET NULL,
+  flutterwave_ref VARCHAR(100) UNIQUE,
+  tx_ref VARCHAR(200),
+  status VARCHAR(50) NOT NULL DEFAULT 'pending',
+  amount DECIMAL(15, 2),
+  currency VARCHAR(3),
+  flw_response JSONB,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for payment lookup
+CREATE INDEX IF NOT EXISTS idx_payment_school_id ON payment_transactions(school_id);
+CREATE INDEX IF NOT EXISTS idx_payment_tx_ref ON payment_transactions(tx_ref);
+CREATE INDEX IF NOT EXISTS idx_payment_flutterwave_ref ON payment_transactions(flutterwave_ref);
+CREATE INDEX IF NOT EXISTS idx_payment_status ON payment_transactions(status);
 `;
 
 async function runMigrations() {

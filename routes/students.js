@@ -6,6 +6,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const authMiddleware = require('../middleware/auth');
+const { validatePassword } = require('../utils/password-validator');
 require('dotenv').config();
 
 // Email transporter
@@ -42,6 +43,20 @@ router.post('/otp', async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email is required" });
+
+    // Check if student with this email already exists
+    const existingStudent = await pool.query(
+      'SELECT id, first_name, last_name FROM students WHERE email = $1',
+      [email]
+    );
+
+    if (existingStudent.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        error: "A student with this email is already registered. Please login instead.",
+        message: "This email is already registered"
+      });
+    }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60000);
@@ -112,7 +127,7 @@ router.post('/verify-otp', async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: "OTP verified successfully. Proceed with registration."
+      message: "OTP verified successfully."
     });
 
   } catch (error) {
@@ -121,6 +136,140 @@ router.post('/verify-otp', async (req, res) => {
       success: false,
       message: "Failed to verify OTP. Please try again later."
     });
+  }
+});
+
+// Forgot Password - Send OTP
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: "Email is required" });
+
+    // Check if student with this email exists
+    const existingStudent = await pool.query(
+      'SELECT id, first_name FROM students WHERE email = $1',
+      [email]
+    );
+
+    if (existingStudent.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "No student account found with this email address.",
+        message: "Account not found"
+      });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60000);
+
+    await pool.query(
+      `INSERT INTO email_verifications (email, otp_code, expires_at) 
+       VALUES ($1, $2, $3) 
+       ON CONFLICT (email) DO UPDATE 
+       SET otp_code = $2, expires_at = $3, is_verified = false`,
+      [email, otp, expiresAt]
+    );
+
+    const mailOptions = {
+      from: '"Student Registry" <inumiduncourteous@gmail.com>',
+      to: email,
+      subject: "Password Reset Code",
+      html: `
+        <div style="font-family: sans-serif; text-align: center; border: 1px solid #ddd; padding: 20px;">
+          <h2 style="color: #333;">Password Reset</h2>
+          <p>Use the code below to reset your student portal password:</p>
+          <h1 style="color: #4A90E2; letter-spacing: 5px; font-size: 32px;">${otp}</h1>
+          <p style="color: #888;">This code expires in 10 minutes. If you didn't request this, please ignore this email.</p>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    res.status(200).json({
+      success: true,
+      message: "Reset code sent successfully"
+    });
+
+  } catch (error) {
+    console.error("Forgot Password Error:", error);
+    res.status(500).json({ error: "Failed to process request" });
+  }
+});
+
+// Reset Password
+router.post('/reset-password', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and new password are required"
+      });
+    }
+
+    // Verify email is verified in email_verifications table
+    const verificationCheck = await client.query(
+      'SELECT is_verified FROM email_verifications WHERE email = $1 AND is_verified = true',
+      [email]
+    );
+
+    if (verificationCheck.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email must be verified first. Please complete OTP verification.'
+      });
+    }
+
+    // Validate password strength
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: passwordValidation.error
+      });
+    }
+
+    await client.query('BEGIN');
+
+    // Hash password
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // Update student password
+    const updateResult = await client.query(
+      'UPDATE students SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE email = $2 RETURNING id',
+      [passwordHash, email]
+    );
+
+    if (updateResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({
+        success: false,
+        error: 'Student not found'
+      });
+    }
+
+    // Clean up verification record
+    await client.query('DELETE FROM email_verifications WHERE email = $1', [email]);
+
+    await client.query('COMMIT');
+
+    res.status(200).json({
+      success: true,
+      message: 'Password reset successful. You can now login with your new password.'
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Reset Password Error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  } finally {
+    client.release();
   }
 });
 
@@ -200,6 +349,15 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'Email must be verified first. Please complete OTP verification.'
+      });
+    }
+
+    // Validate password strength
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: passwordValidation.error
       });
     }
 
