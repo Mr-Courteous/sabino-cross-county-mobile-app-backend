@@ -9,6 +9,7 @@
     "migrate": "node database/migrate.js"
   },
   "dependencies": {
+    "@vercel/blob": "^2.2.0",
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^2.4.3",
@@ -19,6 +20,7 @@
     "jspdf": "^4.0.0",
     "jspdf-autotable": "^5.0.7",
     "morgan": "^1.10.1",
+    "multer": "^2.0.2",
     "nodemailer": "^7.0.12",
     "openai": "^6.16.0",
     "pdfkit": "^0.17.2",

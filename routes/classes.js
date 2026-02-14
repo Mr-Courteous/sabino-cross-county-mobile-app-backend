@@ -11,6 +11,8 @@ router.get('/', async (req, res) => {
     // STRICT SECURITY: Extract schoolId and countryId ONLY from token, never from req.body or req.query
     const schoolId = req.user?.schoolId;
     const countryId = req.user?.countryId;
+    // If the requesting country is "Others" (id 22), fallback to Nigeria (id 1)
+    const effectiveCountryId = (countryId === 22 ? 1 : countryId);
 
     if (!schoolId) {
       return res.status(401).json({
@@ -26,7 +28,7 @@ router.get('/', async (req, res) => {
       });
     }
 
-    console.log(`📥 GET /classes - Request by School: ${schoolId} for Country: ${countryId}`);
+    console.log(`📥 GET /classes - Request by School: ${schoolId} for Country: ${countryId} (effective: ${effectiveCountryId})`);
 
     // Removed school_id from SELECT and WHERE because it doesn't exist in this table
     const query = `
@@ -35,7 +37,7 @@ router.get('/', async (req, res) => {
       WHERE country_id = $1 
       ORDER BY display_name ASC
     `;
-    const params = [countryId];
+    const params = [effectiveCountryId];
 
     const result = await pool.query(query, params);
 
@@ -45,6 +47,7 @@ router.get('/', async (req, res) => {
       success: true,
       data: result.rows,
       countryId: countryId,
+      effectiveCountryId: effectiveCountryId,
       count: result.rows.length
     });
   } catch (error) {
@@ -118,7 +121,7 @@ router.post('/initialize-from-templates', async (req, res) => {
       });
     }
 
-    console.log(`📥 Initializing classes from templates - SchoolId: ${schoolId}, CountryId: ${countryId}`);
+    console.log(`📥 Initializing classes from templates - SchoolId: ${schoolId}, CountryId: ${countryId} (effective: ${effectiveCountryId})`);
 
     // Fetch global class templates for this country
     const templates = await client.query(
@@ -126,13 +129,13 @@ router.post('/initialize-from-templates', async (req, res) => {
        FROM global_class_templates 
        WHERE country_id = $1
        ORDER BY display_name ASC`,
-      [countryId]
+      [effectiveCountryId]
     );
 
     if (templates.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        error: `No class templates found for country_id ${countryId}`
+        error: `No class templates found for country_id ${effectiveCountryId}`
       });
     }
 
@@ -207,6 +210,7 @@ router.post('/initialize', async (req, res) => {
     // STRICT SECURITY: Extract schoolId and countryId ONLY from token, NEVER from req.body
     const schoolId = req.user?.schoolId;
     const countryId = req.user?.countryId;
+    const effectiveCountryId = (countryId === 22 ? 1 : countryId);
 
     if (!schoolId) {
       return res.status(401).json({ success: false, error: 'Authentication context missing. Please login again.' });
@@ -225,13 +229,13 @@ router.post('/initialize', async (req, res) => {
        FROM global_class_templates 
        WHERE country_id = $1
        ORDER BY display_name ASC`,
-      [countryId]
+      [effectiveCountryId]
     );
 
     if (templates.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        error: `No class templates found for country_id ${countryId}`
+        error: `No class templates found for country_id ${effectiveCountryId}`
       });
     }
 

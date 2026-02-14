@@ -20,6 +20,8 @@ router.get('/search', async (req, res) => {
   try {
     // STRICT SECURITY: Extract countryId ONLY from token, never from req.body or req.query
     const countryId = req.user?.countryId;
+    // If requester is "Others" (id 22), fallback to Nigeria (id 1)
+    const effectiveCountryId = (countryId === 22 ? 1 : countryId);
     const { keyword } = req.query;
 
     if (!countryId) {
@@ -38,7 +40,7 @@ router.get('/search', async (req, res) => {
     `;
     
     // ILIKE %keyword% finds the exact word anywhere in the name
-    const result = await pool.query(query, [countryId, `%${keyword}%`]);
+    const result = await pool.query(query, [effectiveCountryId, `%${keyword}%`]);
     
     res.json({ success: true, data: result.rows });
   } catch (error) {

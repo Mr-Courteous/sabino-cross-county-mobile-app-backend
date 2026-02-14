@@ -350,38 +350,43 @@ router.post('/', async (req, res) => {
           console.log(`✓ Country ID ${countryId} found for: ${country}`);
 
           // Auto-initialize classes from global templates for this country
-          try {
-            const templates = await pool.query(
-              `SELECT id, class_code, class_name, form_teacher, capacity 
-               FROM global_class_templates 
-               WHERE country_id = $1
-               ORDER BY class_code ASC`,
-              [countryId]
-            );
+          // (Skip for "Others" with special ID as there are no templates)
+          if (country !== 'Others') {
+            try {
+              const templates = await pool.query(
+                `SELECT id, class_code, class_name, form_teacher, capacity 
+                 FROM global_class_templates 
+                 WHERE country_id = $1
+                 ORDER BY class_code ASC`,
+                [countryId]
+              );
 
-            if (templates.rows.length > 0) {
-              // Insert each template as a class for this school
-              let classesCreated = 0;
-              for (const template of templates.rows) {
-                try {
-                  await pool.query(
-                    `INSERT INTO classes (school_id, class_name, form_teacher, capacity)
-                     VALUES ($1, $2, $3, $4)`,
-                    [school.id, template.class_name, template.form_teacher || null, template.capacity || 50]
-                  );
-                  classesCreated++;
-                } catch (classError) {
-                  // Skip if class already exists
-                  if (classError.code !== '23505') {
-                    console.error(`Error creating class ${template.class_name}:`, classError);
+              if (templates.rows.length > 0) {
+                // Insert each template as a class for this school
+                let classesCreated = 0;
+                for (const template of templates.rows) {
+                  try {
+                    await pool.query(
+                      `INSERT INTO classes (school_id, class_name, form_teacher, capacity)
+                       VALUES ($1, $2, $3, $4)`,
+                      [school.id, template.class_name, template.form_teacher || null, template.capacity || 50]
+                    );
+                    classesCreated++;
+                  } catch (classError) {
+                    // Skip if class already exists
+                    if (classError.code !== '23505') {
+                      console.error(`Error creating class ${template.class_name}:`, classError);
+                    }
                   }
                 }
+                console.log(`✓ Initialized ${classesCreated} classes from global templates for country ${country}`);
               }
-              console.log(`✓ Initialized ${classesCreated} classes from global templates for country ${country}`);
+            } catch (templateError) {
+              console.error("Warning: Failed to initialize classes from global templates:", templateError);
+              // Don't fail registration if template initialization fails
             }
-          } catch (templateError) {
-            console.error("Warning: Failed to initialize classes from global templates:", templateError);
-            // Don't fail registration if template initialization fails
+          } else {
+            console.log(`ℹ️ Skipping class template initialization for "Others" country`);
           }
         } else {
           console.log(`Warning: Country not found: ${country}`);
@@ -477,19 +482,20 @@ router.get('/me', authMiddleware.authenticateToken, async (req, res) => {
 
     const result = await pool.query(
       `SELECT 
-        id, 
-        registration_code, 
-        name, 
-        address, 
-        country, 
-        phone, 
-        email, 
-        school_type, 
-        logo, 
-        stamp,
-        created_at
-      FROM schools 
-      WHERE id = $1`,
+        s.id, 
+        s.registration_code, 
+        s.name, 
+        s.address, 
+        s.country, 
+        s.phone, 
+        s.email, 
+        s.school_type, 
+        COALESCE(pref.logo_url, s.logo) AS logo,
+        COALESCE(pref.stamp_url, s.stamp) AS stamp,
+        s.created_at
+      FROM schools s
+      LEFT JOIN school_preferences pref ON pref.school_id = s.id
+      WHERE s.id = $1`,
       [schoolId]
     );
 
