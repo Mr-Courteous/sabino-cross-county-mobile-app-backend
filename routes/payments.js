@@ -307,7 +307,7 @@ router.post('/initiate', async (req, res) => {
     };
 
     const flwRes = await axios.post(
-      `${FLUTTERWAVE_BASE_URL}/payments`,
+      `${FLUTTERWAVE_BASE_URL}/payme`,
       payload,
       {
         headers: {
