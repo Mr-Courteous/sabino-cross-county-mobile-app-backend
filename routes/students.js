@@ -6,6 +6,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const authMiddleware = require('../middleware/auth');
+const checkSubscription = require('../middleware/checkSubscription');
 const { validatePassword } = require('../utils/password-validator');
 require('dotenv').config();
 
@@ -14,7 +15,7 @@ const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: 'inumiduncourteous@gmail.com',
-    pass: 'vsdx pbec uaev zixr',
+    pass: 'vvcx njbg cwac kuao',
   },
 });
 
@@ -563,9 +564,9 @@ router.post('/login', async (req, res) => {
 /**
  * @route   GET /api/students/me/enrollments
  * @desc    Get logged-in student's enrollment history
- * @access  Private (Student)
+ * @access  Private (Student) - Requires Active Subscription
  */
-router.get('/me/enrollments', authMiddleware.authenticateToken, async (req, res) => {
+router.get('/me/enrollments', authMiddleware.authenticateToken, checkSubscription, async (req, res) => {
   try {
     if (req.user?.type !== 'student') {
       return res.status(403).json({ success: false, error: 'This endpoint is for students only' });
@@ -607,9 +608,9 @@ router.get('/me/enrollments', authMiddleware.authenticateToken, async (req, res)
 /**
  * @route   GET /api/students/me/enrollments/:sessionId
  * @desc    Get details for a specific session enrollment
- * @access  Private (Student)
+ * @access  Private (Student) - Requires Active Subscription
  */
-router.get('/me/enrollments/:sessionId', authMiddleware.authenticateToken, async (req, res) => {
+router.get('/me/enrollments/:sessionId', authMiddleware.authenticateToken, checkSubscription, async (req, res) => {
   try {
     if (req.user?.type !== 'student') {
       return res.status(403).json({ success: false, error: 'This endpoint is for students only' });
@@ -649,7 +650,7 @@ router.get('/me/enrollments/:sessionId', authMiddleware.authenticateToken, async
 });
 
 
-router.put('/profile', authMiddleware.authenticateToken, async (req, res) => {
+router.put('/profile', authMiddleware.authenticateToken, checkSubscription, async (req, res) => {
   const client = await pool.connect();
 
   try {

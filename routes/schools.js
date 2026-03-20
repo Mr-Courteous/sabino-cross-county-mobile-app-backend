@@ -5,6 +5,7 @@ const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
+const { google } = require('googleapis');
 const authMiddleware = require('../middleware/auth');
 const { validatePassword } = require('../utils/password-validator');
 require('dotenv').config();
@@ -14,7 +15,7 @@ const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: 'inumiduncourteous@gmail.com',
-    pass: 'vsdx pbec uaev zixr',
+    pass: 'vvcx njbg cwac kuao',
   },
 });
 
@@ -27,15 +28,24 @@ router.post('/otp', async (req, res) => {
 
     // Check if school with this email already exists
     const existingSchool = await pool.query(
-      'SELECT id, name FROM schools WHERE email = $1',
+      'SELECT id, name, payment_status FROM schools WHERE email = $1',
       [email]
     );
 
     if (existingSchool.rows.length > 0) {
-      return res.status(409).json({
-        success: false,
-        error: "A school with this email is already registered. Please login instead.",
-        message: "This email is already registered"
+      const school = existingSchool.rows[0];
+      return res.status(200).json({
+        success: true,
+        alreadyRegistered: true,
+        resumePayment: school.payment_status === 'pending',
+        message: school.payment_status === 'completed'
+          ? 'This email is already registered. Please login instead.'
+          : 'This email is already registered but payment is still pending. You can resume payment.',
+        data: {
+          schoolId: school.id,
+          name: school.name,
+          paymentStatus: school.payment_status,
+        }
       });
     }
 
@@ -51,7 +61,7 @@ router.post('/otp', async (req, res) => {
     );
 
     const mailOptions = {
-      from: '"Sabino School" <your-email@gmail.com>',
+      from: '"Sabino School" Sabinoschool1@gmail.com <',
       to: email,
       subject: "Verify Your School Email",
       html: `
@@ -255,13 +265,13 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
-// Create school
+// Create school (or resume pending registration)
 router.post('/', async (req, res) => {
   try {
-    const { name, address, country, phone, email, school_type, password } = req.body;
+    const { name, email, password, school_type, country_id, country, phone } = req.body;
 
     if (!name || !email || !password || !school_type) {
-      return res.status(400).json({ success: false, message: "All required fields must be filled" });
+      return res.status(400).json({ success: false, message: 'All required fields must be filled' });
     }
 
     // Validate password strength
@@ -281,39 +291,80 @@ router.post('/', async (req, res) => {
     if (emailVerified.rows.length === 0) {
       return res.status(400).json({
         success: false,
-        message: "Email must be verified first. Please complete OTP verification."
+        message: 'Email must be verified first. Please complete OTP verification.'
       });
     }
 
-    const schoolExists = await pool.query('SELECT id FROM schools WHERE email = $1', [email]);
-    if (schoolExists.rows.length > 0) {
-      return res.status(400).json({ success: false, message: "A school with this email is already registered" });
+    // Check for existing school record by email
+    const existingSchoolRes = await pool.query(
+      'SELECT id, name, email, phone, school_type, country_id, country, payment_status FROM schools WHERE email = $1',
+      [email]
+    );
+
+    if (existingSchoolRes.rows.length > 0) {
+      const existingSchool = existingSchoolRes.rows[0];
+
+      if (existingSchool.payment_status === 'completed') {
+        return res.status(400).json({
+          success: false,
+          message: 'This email is already registered and active.'
+        });
+      }
+
+      // Pending payment - return user data and a fresh JWT allowing them to resume payment
+      const resumeToken = jwt.sign(
+        {
+          id: existingSchool.id,
+          schoolId: existingSchool.id,
+          type: 'school',
+          email: existingSchool.email,
+          name: existingSchool.name,
+          countryId: existingSchool.country_id
+        },
+        process.env.JWT_SECRET || 'your-secret-key',
+        { expiresIn: '24h' }
+      );
+
+      return res.status(200).json({
+        success: true,
+        resumePayment: true,
+        data: {
+          token: resumeToken,
+          user: {
+            schoolId: existingSchool.id,
+            email: existingSchool.email,
+            name: existingSchool.name,
+            type: 'school',
+            countryId: existingSchool.country_id,
+            country: existingSchool.country,
+            phone: existingSchool.phone,
+            paymentStatus: existingSchool.payment_status
+          }
+        }
+      });
     }
 
+    // New registration path
     const hashedPassword = await bcrypt.hash(password, 10);
     const registrationCode = crypto.randomBytes(4).toString('hex').toUpperCase();
 
-    const logoPath = (req.files && req.files.logo) ? req.files.logo[0].path : null;
-    const stampPath = (req.files && req.files.stamp) ? req.files.stamp[0].path : null;
-
     const result = await pool.query(
       `INSERT INTO schools (
-        registration_code, name, address, country, 
-        phone, email, password, school_type, logo, stamp
-      ) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
-      RETURNING id, registration_code, name, email, school_type`,
+        registration_code, name, email, password, school_type,
+        country_id, country, phone, payment_status
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING id, name, email, country_id`,
       [
         registrationCode,
         name,
-        address || null,
-        country || null,
-        phone || null,
         email,
         hashedPassword,
         school_type,
-        logoPath,
-        stampPath
+        country_id || null,
+        country || null,
+        phone || null,
+        'pending'
       ]
     );
 
@@ -333,107 +384,190 @@ router.post('/', async (req, res) => {
       );
       console.log(`✓ Default academic session created for school: ${defaultSessionName}`);
     } catch (sessionError) {
-      console.error("Warning: Failed to create default academic session:", sessionError);
-      // Don't fail the school registration if session creation fails
+      console.error('Warning: Failed to create default academic session:', sessionError);
+      // Don't fail registration if session creation fails
     }
 
-    // Look up country_id from countries table based on country name
-    let countryId = null;
-    if (country) {
+    // If country_id was not provided, attempt to resolve it using the country name
+    let resolvedCountryId = country_id;
+    if (!resolvedCountryId && country) {
       try {
-        const countryResult = await pool.query(
+        const countryRow = await pool.query(
           'SELECT id FROM countries WHERE name = $1 LIMIT 1',
           [country]
         );
-        if (countryResult.rows.length > 0) {
-          countryId = countryResult.rows[0].id;
-          console.log(`✓ Country ID ${countryId} found for: ${country}`);
-
-          // Auto-initialize classes from global templates for this country
-          // (Skip for "Others" with special ID as there are no templates)
-          if (country !== 'Others') {
-            try {
-              const templates = await pool.query(
-                `SELECT id, class_code, class_name, form_teacher, capacity 
-                 FROM global_class_templates 
-                 WHERE country_id = $1
-                 ORDER BY class_code ASC`,
-                [countryId]
-              );
-
-              if (templates.rows.length > 0) {
-                // Insert each template as a class for this school
-                let classesCreated = 0;
-                for (const template of templates.rows) {
-                  try {
-                    await pool.query(
-                      `INSERT INTO classes (school_id, class_name, form_teacher, capacity)
-                       VALUES ($1, $2, $3, $4)`,
-                      [school.id, template.class_name, template.form_teacher || null, template.capacity || 50]
-                    );
-                    classesCreated++;
-                  } catch (classError) {
-                    // Skip if class already exists
-                    if (classError.code !== '23505') {
-                      console.error(`Error creating class ${template.class_name}:`, classError);
-                    }
-                  }
-                }
-                console.log(`✓ Initialized ${classesCreated} classes from global templates for country ${country}`);
-              }
-            } catch (templateError) {
-              console.error("Warning: Failed to initialize classes from global templates:", templateError);
-              // Don't fail registration if template initialization fails
-            }
-          } else {
-            console.log(`ℹ️ Skipping class template initialization for "Others" country`);
-          }
-        } else {
-          console.log(`Warning: Country not found: ${country}`);
+        if (countryRow.rows.length > 0) {
+          resolvedCountryId = countryRow.rows[0].id;
         }
       } catch (countryLookupError) {
-        console.error("Warning: Failed to lookup country:", countryLookupError);
-        // Don't fail registration if country lookup fails
+        console.warn('Warning: Failed to lookup country:', countryLookupError);
       }
     }
 
-    await pool.query('DELETE FROM email_verifications WHERE email = $1', [email]);
-    await pool.query('INSERT INTO school_preferences (school_id) VALUES ($1)', [school.id]);
+    // Create default preference row for the school (if table exists)
+    try {
+      await pool.query('INSERT INTO school_preferences (school_id) VALUES ($1)', [school.id]);
+    } catch (prefError) {
+      console.warn('Warning: Failed to create default school preferences:', prefError);
+    }
 
     const token = jwt.sign(
       {
+        id: school.id,
         schoolId: school.id,
+        type: 'school',
         email: school.email,
-        name: school.name,
-        countryId: countryId
+        name,
+        countryId: resolvedCountryId
       },
       process.env.JWT_SECRET || 'your-secret-key',
       { expiresIn: '24h' }
     );
 
-    // UPDATED RESPONSE STRUCTURE FOR CONSISTENCY
     return res.status(201).json({
       success: true,
-      message: 'School registered successfully',
       data: {
-        token, // Token is now inside data
-        user: { // User object mirrors the login structure
+        token,
+        user: {
           schoolId: school.id,
           email: school.email,
-          name: school.name,
-          registration_code: school.registration_code,
+          name,
           type: 'school',
-          countryId: countryId
+          countryId: resolvedCountryId,
+          paymentStatus: 'pending'
         }
       }
     });
-
   } catch (error) {
-    console.error("Registration Error:", error);
+    console.error('Registration Error:', error);
     return res.status(500).json({
       success: false,
-      message: "Registration failed. Please try again later.",
-      error: error instanceof Error ? error.message : "Unknown error"
+      message: 'Registration failed. Please try again later.',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Update payment status after verifying Google Play purchase
+router.patch('/:schoolId/payment-status', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const { schoolId } = req.params;
+    const purchaseToken = req.body.purchaseToken || req.body.purchase_token;
+    const paymentStatus = req.body.payment_status || req.body.paymentStatus;
+    const subscriptionDetails = req.body.subscriptionDetails || req.body.subscription_details;
+
+    // Ensure authenticated user can only update their own record
+    const tokenSchoolId = req.user?.id;
+    if (!tokenSchoolId || parseInt(schoolId, 10) !== tokenSchoolId) {
+      return res.status(403).json({ success: false, message: 'Forbidden: You can only update your own payment status.' });
+    }
+
+    if (!purchaseToken) {
+      return res.status(400).json({ success: false, message: 'purchaseToken is required' });
+    }
+
+    if (!paymentStatus || paymentStatus !== 'completed') {
+      return res.status(400).json({ success: false, message: 'payment_status must be "completed" for verified payment updates.' });
+    }
+
+    // Verify purchase with Google Play using service account
+    const packageName = process.env.GOOGLE_PLAY_PACKAGE_NAME;
+    const subscriptionId = process.env.GOOGLE_PLAY_SUBSCRIPTION_ID || '12345sabino';
+    const keyFile = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE;
+
+    if (!packageName || !subscriptionId || !keyFile) {
+      console.error('Google Play configuration missing');
+      return res.status(500).json({
+        success: false,
+        message: 'Server not configured for Google Play verification.'
+      });
+    }
+
+    const auth = new google.auth.GoogleAuth({
+      keyFile,
+      scopes: ['https://www.googleapis.com/auth/androidpublisher'],
+    });
+
+    const androidpublisher = google.androidpublisher({ version: 'v3', auth });
+
+    // Verify the purchase token with Google
+    const response = await androidpublisher.purchases.subscriptions.get({
+      packageName,
+      subscriptionId,
+      token: purchaseToken,
+    });
+
+    const purchaseData = response.data;
+
+    // Check if purchase is valid and active
+    if (purchaseData.purchaseState !== 0) {
+      return res.status(401).json({
+        success: false,
+        message: 'Purchase is not valid or has been cancelled.'
+      });
+    }
+
+    const expiryTimeMillis = parseInt(purchaseData.expiryTimeMillis, 10);
+    if (Number.isNaN(expiryTimeMillis) || expiryTimeMillis <= Date.now()) {
+      return res.status(401).json({
+        success: false,
+        message: 'Subscription has expired.'
+      });
+    }
+
+    // Purchase is verified and active, update database
+    const expiryDate = new Date(expiryTimeMillis);
+
+    await pool.query(
+      `UPDATE schools SET
+        payment_status = $1,
+        purchase_token = $2,
+        subscription_expiry = $3,
+        google_play_order_id = $4,
+        subscription_details = $5,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = $6`,
+      [
+        'completed',
+        purchaseToken,
+        expiryDate,
+        purchaseData.orderId || null,
+        JSON.stringify(purchaseData),
+        schoolId
+      ]
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Payment verified and subscription activated.',
+      data: {
+        schoolId: parseInt(schoolId, 10),
+        subscriptionExpiry: expiryDate,
+        paymentStatus: 'completed'
+      }
+    });
+  } catch (error) {
+    console.error('Payment verification error:', error);
+
+    // Handle Google API errors specifically
+    if (error?.code === 401 || error?.code === 403) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid purchase token. Please retry the purchase.'
+      });
+    }
+
+    if (error?.code === 404) {
+      return res.status(401).json({
+        success: false,
+        message: 'Purchase not found. Please ensure the purchase was completed.'
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to verify purchase at this time. Please try again later.',
+      error: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });
