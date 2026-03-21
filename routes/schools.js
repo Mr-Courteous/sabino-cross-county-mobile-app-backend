@@ -78,6 +78,7 @@ router.post('/otp', async (req, res) => {
 
     res.status(200).json({
       success: true,
+      alreadyRegistered: false,
       message: "Verification code sent successfully"
     });
 
@@ -569,6 +570,62 @@ router.patch('/:schoolId/payment-status', authMiddleware.authenticateToken, asyn
       message: 'Unable to verify purchase at this time. Please try again later.',
       error: error instanceof Error ? error.message : 'Unknown error'
     });
+  }
+});
+
+// Verify Flutterwave Payment and Activate Account
+router.post('/:schoolId/verify-flutterwave', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const { schoolId } = req.params;
+    const { transaction_id } = req.body;
+
+    // 1. Security check - ensure school exists and belongs to the user
+    // In our JWT token, schoolId is stored in 'id' and 'schoolId'
+    if (parseInt(schoolId) !== req.user.id) {
+      return res.status(403).json({ error: "Unauthorized: You can only activate your own school account." });
+    }
+
+    if (!transaction_id) {
+      return res.status(400).json({ error: "Transaction ID is required" });
+    }
+
+    // 2. Verify with Flutterwave API
+    const response = await fetch(`https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${process.env.FLW_SECRET_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const data = await response.json();
+
+    // 3. Check if payment was successful and amount matches
+    if (data.status === 'success' && data.data.status === 'successful') {
+      
+      // 4. Update the schools table and return subscription start
+      const result = await pool.query(
+        `UPDATE schools SET 
+         payment_status = 'completed', 
+         updated_at = CURRENT_TIMESTAMP 
+         WHERE id = $1 RETURNING *`,
+        [schoolId]
+      );
+
+      return res.json({
+        success: true,
+        message: "Payment verified, account activated!",
+        school: result.rows[0]
+      });
+    } else {
+      return res.status(400).json({ 
+        error: "Payment verification failed", 
+        details: data.message || "Flutterwave returned an unsucessful status."
+      });
+    }
+  } catch (error) {
+    console.error("Flutterwave Verify Error:", error);
+    res.status(500).json({ error: "Internal server error during verification" });
   }
 });
 
