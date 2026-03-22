@@ -23,8 +23,9 @@ const transporter = nodemailer.createTransport({
 // Send OTP
 router.post('/otp', async (req, res) => {
   try {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ error: "Email is required" });
+    const { email: rawEmail } = req.body;
+    if (!rawEmail) return res.status(400).json({ error: "Email is required" });
+    const email = rawEmail.toLowerCase();
 
     // Check if school with this email already exists
     const existingSchool = await pool.query(
@@ -82,14 +83,15 @@ router.post('/otp', async (req, res) => {
 // Verify OTP
 router.post('/verify-otp', async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const { email: rawEmail, otp } = req.body;
 
-    if (!email || !otp) {
+    if (!rawEmail || !otp) {
       return res.status(400).json({
         success: false,
         message: "Email and OTP are required"
       });
     }
+    const email = rawEmail.toLowerCase();
 
     const verifyRes = await pool.query(
       'SELECT * FROM email_verifications WHERE email = $1 AND otp_code = $2 AND expires_at > NOW()',
@@ -125,8 +127,9 @@ router.post('/verify-otp', async (req, res) => {
 // Forgot Password - Send OTP
 router.post('/forgot-password', async (req, res) => {
   try {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ error: "Email is required" });
+    const { email: rawEmail } = req.body;
+    if (!rawEmail) return res.status(400).json({ error: "Email is required" });
+    const email = rawEmail.toLowerCase();
 
     // Check if school with this email exists
     const existingSchool = await pool.query(
@@ -184,14 +187,15 @@ router.post('/forgot-password', async (req, res) => {
 router.post('/reset-password', async (req, res) => {
   const client = await pool.connect();
   try {
-    const { email, password } = req.body;
+    const { email: rawEmail, password } = req.body;
 
-    if (!email || !password) {
+    if (!rawEmail || !password) {
       return res.status(400).json({
         success: false,
         message: "Email and new password are required"
       });
     }
+    const email = rawEmail.toLowerCase();
 
     // Verify email is verified in email_verifications table
     const verificationCheck = await client.query(
@@ -259,11 +263,12 @@ router.post('/reset-password', async (req, res) => {
 // Create school (or resume pending registration)
 router.post('/', async (req, res) => {
   try {
-    const { name, email, password, school_type, country_id, country, phone } = req.body;
+    const { name, email: rawEmail, password, school_type, country_id, country, phone } = req.body;
 
-    if (!name || !email || !password || !school_type) {
+    if (!name || !rawEmail || !password || !school_type) {
       return res.status(400).json({ success: false, message: 'All required fields must be filled' });
     }
+    const email = rawEmail.toLowerCase();
 
     // Validate password strength
     const passwordValidation = validatePassword(password);
