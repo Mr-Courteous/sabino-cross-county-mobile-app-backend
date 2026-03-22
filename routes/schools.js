@@ -287,12 +287,18 @@ router.post('/', async (req, res) => {
       });
     }
 
-    console.log(`[VERIFY] Looking for verification for email: "${email}"`);
+    console.log(`[VERIFY] Checking all records for email: "${email}" at ${new Date().toISOString()}`);
+    const debugRecord = await pool.query(
+      'SELECT email, is_verified, expires_at FROM email_verifications WHERE LOWER(email) = LOWER($1)',
+      [email]
+    );
+    console.log(`[VERIFY] Pre-check records found:`, debugRecord.rows);
+
     const emailVerified = await pool.query(
       'SELECT email, is_verified FROM email_verifications WHERE LOWER(email) = LOWER($1) AND is_verified = true',
       [email]
     );
-    console.log(`[VERIFY] Query result:`, emailVerified.rows);
+    console.log(`[VERIFY] Verified records found:`, emailVerified.rows);
 
     if (emailVerified.rows.length === 0) {
       return res.status(400).json({
