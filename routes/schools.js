@@ -19,6 +19,43 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Check account status WITHOUT sending OTP
+router.get('/check-status/:email', async (req, res) => {
+  try {
+    const { email: rawEmail } = req.params;
+    if (!rawEmail || rawEmail === 'undefined') return res.status(400).json({ error: "Email is required" });
+    const email = rawEmail.toLowerCase();
+
+    const result = await pool.query(
+      'SELECT id, name, payment_status FROM schools WHERE email = $1',
+      [email]
+    );
+
+    if (result.rows.length > 0) {
+      const school = result.rows[0];
+      return res.status(200).json({
+        success: true,
+        alreadyRegistered: true,
+        resumePayment: school.payment_status === 'pending',
+        data: {
+          schoolId: school.id,
+          name: school.name,
+          paymentStatus: school.payment_status,
+        }
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      alreadyRegistered: false
+    });
+
+  } catch (error) {
+    console.error("Check Status Error:", error);
+    res.status(500).json({ error: "Failed to check account status" });
+  }
+});
+
 
 // Send OTP
 router.post('/otp', async (req, res) => {
