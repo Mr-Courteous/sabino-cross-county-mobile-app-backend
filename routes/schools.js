@@ -33,19 +33,9 @@ router.post('/otp', async (req, res) => {
     );
 
     if (existingSchool.rows.length > 0) {
-      const school = existingSchool.rows[0];
-      return res.status(200).json({
-        success: true,
-        alreadyRegistered: true,
-        resumePayment: school.payment_status === 'pending',
-        message: school.payment_status === 'completed'
-          ? 'This email is already registered. Please login instead.'
-          : 'This email is already registered but payment is still pending. You can resume payment.',
-        data: {
-          schoolId: school.id,
-          name: school.name,
-          paymentStatus: school.payment_status,
-        }
+      return res.status(400).json({
+        success: false,
+        message: 'This email has already been registered. Please login instead.'
       });
     }
 
