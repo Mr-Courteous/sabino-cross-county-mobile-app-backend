@@ -93,12 +93,14 @@ router.post('/verify-otp', async (req, res) => {
     }
     const email = rawEmail.toLowerCase();
 
+    console.log(`[UPDATE START] Attempting to verify email: "${email}" with OTP: ${otp}`);
     const verifyRes = await pool.query(
-      'SELECT * FROM email_verifications WHERE email = $1 AND otp_code = $2 AND expires_at > NOW()',
+      'SELECT * FROM email_verifications WHERE LOWER(TRIM(email)) = LOWER(TRIM($1)) AND otp_code = $2 AND expires_at > NOW()',
       [email, otp]
     );
 
     if (verifyRes.rows.length === 0) {
+      console.log(`[UPDATE FAILED] No matching record for: "${email}" or expired/wrong OTP.`);
       return res.status(400).json({
         success: false,
         message: "Invalid or expired verification code"
@@ -106,10 +108,11 @@ router.post('/verify-otp', async (req, res) => {
     }
 
     const updateResult = await pool.query(
-      'UPDATE email_verifications SET is_verified = true WHERE LOWER(email) = LOWER($1)',
+      'UPDATE email_verifications SET is_verified = true WHERE LOWER(TRIM(email)) = LOWER(TRIM($1)) RETURNING *',
       [email]
     );
-    console.log(`[UPDATE] Marked ${updateResult.rowCount} rows as verified for email: ${email}`);
+    
+    console.log(`[UPDATE RESULT] Row after update for ${email}:`, updateResult.rows[0]);
 
     if (updateResult.rowCount === 0) {
       return res.status(404).json({
