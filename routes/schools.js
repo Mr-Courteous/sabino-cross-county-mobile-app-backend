@@ -105,10 +105,18 @@ router.post('/verify-otp', async (req, res) => {
       });
     }
 
-    await pool.query(
-      'UPDATE email_verifications SET is_verified = true WHERE email = $1',
+    const updateResult = await pool.query(
+      'UPDATE email_verifications SET is_verified = true WHERE LOWER(email) = LOWER($1)',
       [email]
     );
+    console.log(`[UPDATE] Marked ${updateResult.rowCount} rows as verified for email: ${email}`);
+
+    if (updateResult.rowCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No verification record found for this email. Please request a new OTP first."
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -279,10 +287,12 @@ router.post('/', async (req, res) => {
       });
     }
 
+    console.log(`[VERIFY] Looking for verification for email: "${email}"`);
     const emailVerified = await pool.query(
-      'SELECT is_verified FROM email_verifications WHERE email = $1 AND is_verified = true',
+      'SELECT email, is_verified FROM email_verifications WHERE LOWER(email) = LOWER($1) AND is_verified = true',
       [email]
     );
+    console.log(`[VERIFY] Query result:`, emailVerified.rows);
 
     if (emailVerified.rows.length === 0) {
       return res.status(400).json({
