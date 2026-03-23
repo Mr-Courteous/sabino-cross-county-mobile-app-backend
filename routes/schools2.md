@@ -19,12 +19,50 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Check account status WITHOUT sending OTP
+router.get('/check-status/:email', async (req, res) => {
+  try {
+    const { email: rawEmail } = req.params;
+    if (!rawEmail || rawEmail === 'undefined') return res.status(400).json({ error: "Email is required" });
+    const email = rawEmail.toLowerCase();
+
+    const result = await pool.query(
+      'SELECT id, name, payment_status FROM schools WHERE email = $1',
+      [email]
+    );
+
+    if (result.rows.length > 0) {
+      const school = result.rows[0];
+      return res.status(200).json({
+        success: true,
+        alreadyRegistered: true,
+        resumePayment: school.payment_status === 'pending',
+        data: {
+          schoolId: school.id,
+          name: school.name,
+          paymentStatus: school.payment_status,
+        }
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      alreadyRegistered: false
+    });
+
+  } catch (error) {
+    console.error("Check Status Error:", error);
+    res.status(500).json({ error: "Failed to check account status" });
+  }
+});
+
 
 // Send OTP
 router.post('/otp', async (req, res) => {
   try {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ error: "Email is required" });
+    const { email: rawEmail } = req.body;
+    if (!rawEmail) return res.status(400).json({ error: "Email is required" });
+    const email = rawEmail.toLowerCase();
 
     // Check if school with this email already exists
     const existingSchool = await pool.query(
@@ -33,19 +71,9 @@ router.post('/otp', async (req, res) => {
     );
 
     if (existingSchool.rows.length > 0) {
-      const school = existingSchool.rows[0];
-      return res.status(200).json({
-        success: true,
-        alreadyRegistered: true,
-        resumePayment: school.payment_status === 'pending',
-        message: school.payment_status === 'completed'
-          ? 'This email is already registered. Please login instead.'
-          : 'This email is already registered but payment is still pending. You can resume payment.',
-        data: {
-          schoolId: school.id,
-          name: school.name,
-          paymentStatus: school.payment_status,
-        }
+      return res.status(400).json({
+        success: false,
+        message: 'This email has already been registered. Please login instead.'
       });
     }
 
@@ -92,31 +120,43 @@ router.post('/otp', async (req, res) => {
 // Verify OTP
 router.post('/verify-otp', async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const { email: rawEmail, otp } = req.body;
 
-    if (!email || !otp) {
+    if (!rawEmail || !otp) {
       return res.status(400).json({
         success: false,
         message: "Email and OTP are required"
       });
     }
+    const email = rawEmail.toLowerCase();
 
+    console.log(`[UPDATE START] Attempting to verify email: "${email}" with OTP: ${otp}`);
     const verifyRes = await pool.query(
-      'SELECT * FROM email_verifications WHERE email = $1 AND otp_code = $2 AND expires_at > NOW()',
+      'SELECT * FROM email_verifications WHERE LOWER(TRIM(email)) = LOWER(TRIM($1)) AND otp_code = $2 AND expires_at > NOW()',
       [email, otp]
     );
 
     if (verifyRes.rows.length === 0) {
+      console.log(`[UPDATE FAILED] No matching record for: "${email}" or expired/wrong OTP.`);
       return res.status(400).json({
         success: false,
         message: "Invalid or expired verification code"
       });
     }
 
-    await pool.query(
-      'UPDATE email_verifications SET is_verified = true WHERE email = $1',
+    const updateResult = await pool.query(
+      'UPDATE email_verifications SET is_verified = true WHERE LOWER(TRIM(email)) = LOWER(TRIM($1)) RETURNING *',
       [email]
     );
+    
+    console.log(`[UPDATE RESULT] Row after update for ${email}:`, updateResult.rows[0]);
+
+    if (updateResult.rowCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No verification record found for this email. Please request a new OTP first."
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -135,8 +175,9 @@ router.post('/verify-otp', async (req, res) => {
 // Forgot Password - Send OTP
 router.post('/forgot-password', async (req, res) => {
   try {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ error: "Email is required" });
+    const { email: rawEmail } = req.body;
+    if (!rawEmail) return res.status(400).json({ error: "Email is required" });
+    const email = rawEmail.toLowerCase();
 
     // Check if school with this email exists
     const existingSchool = await pool.query(
@@ -194,14 +235,15 @@ router.post('/forgot-password', async (req, res) => {
 router.post('/reset-password', async (req, res) => {
   const client = await pool.connect();
   try {
-    const { email, password } = req.body;
+    const { email: rawEmail, password } = req.body;
 
-    if (!email || !password) {
+    if (!rawEmail || !password) {
       return res.status(400).json({
         success: false,
         message: "Email and new password are required"
       });
     }
+    const email = rawEmail.toLowerCase();
 
     // Verify email is verified in email_verifications table
     const verificationCheck = await client.query(
@@ -269,11 +311,12 @@ router.post('/reset-password', async (req, res) => {
 // Create school (or resume pending registration)
 router.post('/', async (req, res) => {
   try {
-    const { name, email, password, school_type, country_id, country, phone } = req.body;
+    const { name, email: rawEmail, password, school_type, country_id, country, phone } = req.body;
 
-    if (!name || !email || !password || !school_type) {
+    if (!name || !rawEmail || !password || !school_type) {
       return res.status(400).json({ success: false, message: 'All required fields must be filled' });
     }
+    const email = rawEmail.toLowerCase();
 
     // Validate password strength
     const passwordValidation = validatePassword(password);
@@ -284,10 +327,18 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const emailVerified = await pool.query(
-      'SELECT is_verified FROM email_verifications WHERE email = $1 AND is_verified = true',
+    console.log(`[VERIFY] Checking all records for email: "${email}" at ${new Date().toISOString()}`);
+    const debugRecord = await pool.query(
+      'SELECT email, is_verified, expires_at FROM email_verifications WHERE LOWER(email) = LOWER($1)',
       [email]
     );
+    console.log(`[VERIFY] Pre-check records found:`, debugRecord.rows);
+
+    const emailVerified = await pool.query(
+      'SELECT email, is_verified FROM email_verifications WHERE LOWER(email) = LOWER($1) AND is_verified = true',
+      [email]
+    );
+    console.log(`[VERIFY] Verified records found:`, emailVerified.rows);
 
     if (emailVerified.rows.length === 0) {
       return res.status(400).json({
@@ -570,62 +621,6 @@ router.patch('/:schoolId/payment-status', authMiddleware.authenticateToken, asyn
       message: 'Unable to verify purchase at this time. Please try again later.',
       error: error instanceof Error ? error.message : 'Unknown error'
     });
-  }
-});
-
-// Verify Flutterwave Payment and Activate Account
-router.post('/:schoolId/verify-flutterwave', authMiddleware.authenticateToken, async (req, res) => {
-  try {
-    const { schoolId } = req.params;
-    const { transaction_id } = req.body;
-
-    // 1. Security check - ensure school exists and belongs to the user
-    // In our JWT token, schoolId is stored in 'id' and 'schoolId'
-    if (parseInt(schoolId) !== req.user.id) {
-      return res.status(403).json({ error: "Unauthorized: You can only activate your own school account." });
-    }
-
-    if (!transaction_id) {
-      return res.status(400).json({ error: "Transaction ID is required" });
-    }
-
-    // 2. Verify with Flutterwave API
-    const response = await fetch(`https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${process.env.FLW_SECRET_KEY}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    const data = await response.json();
-
-    // 3. Check if payment was successful and amount matches
-    if (data.status === 'success' && data.data.status === 'successful') {
-
-      // 4. Update the schools table and return subscription start
-      const result = await pool.query(
-        `UPDATE schools SET 
-         payment_status = 'completed', 
-         updated_at = CURRENT_TIMESTAMP 
-         WHERE id = $1 RETURNING *`,
-        [schoolId]
-      );
-
-      return res.json({
-        success: true,
-        message: "Payment verified, account activated!",
-        school: result.rows[0]
-      });
-    } else {
-      return res.status(400).json({
-        error: "Payment verification failed",
-        details: data.message || "Flutterwave returned an unsucessful status."
-      });
-    }
-  } catch (error) {
-    console.error("Flutterwave Verify Error:", error);
-    res.status(500).json({ error: "Internal server error during verification" });
   }
 });
 
