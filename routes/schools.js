@@ -5,10 +5,56 @@ const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
-const { google } = require('googleapis');
+// googleapis removed — purchase verification is now handled by RevenueCat webhooks
 const authMiddleware = require('../middleware/auth');
 const { validatePassword } = require('../utils/password-validator');
 require('dotenv').config();
+
+// ---------------------------------------------------------------------------
+// Subscription gating middleware
+// Apply this AFTER authMiddleware.authenticateToken on any route that requires
+// an active subscription (e.g. student lists, results, reports).
+//
+// Usage:
+//   router.get('/students', authMiddleware.authenticateToken, checkSubscription, handler)
+// ---------------------------------------------------------------------------
+const checkSubscription = async (req, res, next) => {
+  try {
+    const schoolId = req.user?.id;
+    if (!schoolId) {
+      return res.status(401).json({ success: false, error: 'Authentication required.' });
+    }
+
+    const result = await pool.query(
+      'SELECT payment_status, subscription_expiry FROM schools WHERE id = $1',
+      [schoolId]
+    );
+
+    const school = result.rows[0];
+
+    if (!school || school.payment_status !== 'completed') {
+      return res.status(402).json({
+        success: false,
+        error: 'Subscription required.',
+        message: 'Your school does not have an active subscription. Please complete payment to access this feature.'
+      });
+    }
+
+    // Optional: also check if subscription has expired
+    if (school.subscription_expiry && new Date(school.subscription_expiry) < new Date()) {
+      return res.status(402).json({
+        success: false,
+        error: 'Subscription expired.',
+        message: 'Your subscription has expired. Please renew to continue.'
+      });
+    }
+
+    next();
+  } catch (error) {
+    console.error('[checkSubscription] Error:', error);
+    return res.status(500).json({ success: false, error: 'Failed to verify subscription status.' });
+  }
+};
 
 // Email transporter
 const transporter = nodemailer.createTransport({
@@ -485,127 +531,82 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Update payment status after verifying Google Play purchase
-router.patch('/:schoolId/payment-status', authMiddleware.authenticateToken, async (req, res) => {
+// RevenueCat Webhook — called server-to-server by RevenueCat on every subscription event.
+// Security: RevenueCat sends a shared secret in the Authorization header.
+// Set REVENUECAT_WEBHOOK_AUTH_TOKEN in your .env and configure the same value
+// in RevenueCat Dashboard → Project → Webhooks → Authorization Header.
+router.post('/revenuecat-webhook', async (req, res) => {
   try {
-    const { schoolId } = req.params;
-    const purchaseToken = req.body.purchaseToken || req.body.purchase_token;
-    const paymentStatus = req.body.payment_status || req.body.paymentStatus;
-    const subscriptionDetails = req.body.subscriptionDetails || req.body.subscription_details;
+    // 1. Authenticate the request (shared secret header check)
+    const authHeader = req.headers['authorization'];
+    const expectedToken = process.env.REVENUECAT_WEBHOOK_AUTH_TOKEN;
 
-    // Ensure authenticated user can only update their own record
-    const tokenSchoolId = req.user?.id;
-    if (!tokenSchoolId || parseInt(schoolId, 10) !== tokenSchoolId) {
-      return res.status(403).json({ success: false, message: 'Forbidden: You can only update your own payment status.' });
+    if (!expectedToken) {
+      console.error('[RC Webhook] REVENUECAT_WEBHOOK_AUTH_TOKEN is not set in environment.');
+      return res.status(500).send('Webhook secret not configured.');
     }
 
-    if (!purchaseToken) {
-      return res.status(400).json({ success: false, message: 'purchaseToken is required' });
+    if (authHeader !== expectedToken) {
+      console.warn('[RC Webhook] Unauthorized request — invalid Authorization header.');
+      return res.status(401).send('Unauthorized');
     }
 
-    if (!paymentStatus || paymentStatus !== 'completed') {
-      return res.status(400).json({ success: false, message: 'payment_status must be "completed" for verified payment updates.' });
+    // 2. Parse the event
+    const { event } = req.body;
+
+    if (!event || !event.type) {
+      return res.status(400).send('Invalid webhook payload.');
     }
 
-    // Verify purchase with Google Play using service account
-    const packageName = process.env.GOOGLE_PLAY_PACKAGE_NAME;
-    const subscriptionId = process.env.GOOGLE_PLAY_SUBSCRIPTION_ID || '12345sabino';
-    const keyFile = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE;
+    console.log(`[RC Webhook] Received event: ${event.type} for app_user_id: ${event.app_user_id}`);
 
-    if (!packageName || !subscriptionId || !keyFile) {
-      console.error('Google Play configuration missing');
-      return res.status(500).json({
-        success: false,
-        message: 'Server not configured for Google Play verification.'
-      });
+    // 3. The App User ID in RevenueCat must be set to the school's DB id.
+    //    Configure this in the mobile app: Purchases.logIn(schoolId.toString())
+    const schoolId = event.app_user_id;
+
+    if (!schoolId) {
+      console.warn('[RC Webhook] No app_user_id found in event. Ignoring.');
+      return res.status(200).send('Ignored — no app_user_id.');
     }
 
-    const auth = new google.auth.GoogleAuth({
-      keyFile,
-      scopes: ['https://www.googleapis.com/auth/androidpublisher'],
-    });
+    // 4. Handle relevant subscription events
+    if (event.type === 'INITIAL_PURCHASE' || event.type === 'RENEWAL') {
+      const expiryDate = event.expiration_at_ms
+        ? new Date(event.expiration_at_ms)
+        : null;
 
-    const androidpublisher = google.androidpublisher({ version: 'v3', auth });
+      await pool.query(
+        `UPDATE schools SET
+          payment_status = 'completed',
+          subscription_expiry = $1,
+          updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2`,
+        [expiryDate, schoolId]
+      );
 
-    // Verify the purchase token with Google
-    const response = await androidpublisher.purchases.subscriptions.get({
-      packageName,
-      subscriptionId,
-      token: purchaseToken,
-    });
+      console.log(`[RC Webhook] ✅ School ${schoolId} activated. Expiry: ${expiryDate}`);
 
-    const purchaseData = response.data;
+    } else if (event.type === 'CANCELLATION' || event.type === 'EXPIRATION') {
+      // Optional: mark subscription as expired so access can be gated on the backend
+      await pool.query(
+        `UPDATE schools SET
+          payment_status = 'expired',
+          updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [schoolId]
+      );
 
-    // Check if purchase is valid and active
-    if (purchaseData.purchaseState !== 0) {
-      return res.status(401).json({
-        success: false,
-        message: 'Purchase is not valid or has been cancelled.'
-      });
+      console.log(`[RC Webhook] ⚠️ School ${schoolId} subscription cancelled/expired.`);
+    } else {
+      console.log(`[RC Webhook] Unhandled event type "${event.type}". Ignoring.`);
     }
 
-    const expiryTimeMillis = parseInt(purchaseData.expiryTimeMillis, 10);
-    if (Number.isNaN(expiryTimeMillis) || expiryTimeMillis <= Date.now()) {
-      return res.status(401).json({
-        success: false,
-        message: 'Subscription has expired.'
-      });
-    }
+    // Always respond 200 quickly so RevenueCat doesn't retry
+    return res.status(200).send('Webhook Received');
 
-    // Purchase is verified and active, update database
-    const expiryDate = new Date(expiryTimeMillis);
-
-    await pool.query(
-      `UPDATE schools SET
-        payment_status = $1,
-        purchase_token = $2,
-        subscription_expiry = $3,
-        google_play_order_id = $4,
-        subscription_details = $5,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = $6`,
-      [
-        'completed',
-        purchaseToken,
-        expiryDate,
-        purchaseData.orderId || null,
-        JSON.stringify(purchaseData),
-        schoolId
-      ]
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: 'Payment verified and subscription activated.',
-      data: {
-        schoolId: parseInt(schoolId, 10),
-        subscriptionExpiry: expiryDate,
-        paymentStatus: 'completed'
-      }
-    });
   } catch (error) {
-    console.error('Payment verification error:', error);
-
-    // Handle Google API errors specifically
-    if (error?.code === 401 || error?.code === 403) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid purchase token. Please retry the purchase.'
-      });
-    }
-
-    if (error?.code === 404) {
-      return res.status(401).json({
-        success: false,
-        message: 'Purchase not found. Please ensure the purchase was completed.'
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-      message: 'Unable to verify purchase at this time. Please try again later.',
-      error: error instanceof Error ? error.message : 'Unknown error'
-    });
+    console.error('[RC Webhook] Error processing webhook:', error);
+    return res.status(500).send('Internal server error');
   }
 });
 
