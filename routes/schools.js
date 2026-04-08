@@ -567,13 +567,15 @@ router.post('/revenuecat-webhook', async (req, res) => {
 
     // 2. Handle relevant events
     if (type === 'INITIAL_PURCHASE' || type === 'RENEWAL') {
-      const expiryDate = expiration_at_ms ? new Date(expiration_at_ms) : null;
+      // Use the exact date Google provides since your plan is already 4 months
+      const exactExpiry = expiration_at_ms ? new Date(expiration_at_ms).toISOString() : null;
 
       await pool.query(
         'UPDATE schools SET payment_status = $1, subscription_expiry = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
-        ['completed', expiryDate, app_user_id]
+        ['completed', exactExpiry, app_user_id]
       );
-      console.log(`✅ Subscription activated for School ID: ${app_user_id}. Expiry: ${expiryDate}`);
+      
+      console.log(`✅ Success: School ${app_user_id} activated. Database expiry set to: ${exactExpiry}`);
     }
     else if (type === 'EXPIRATION' || type === 'CANCELLATION') {
       await pool.query(
