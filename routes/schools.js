@@ -531,82 +531,68 @@ router.post('/', async (req, res) => {
   }
 });
 
-// RevenueCat Webhook — called server-to-server by RevenueCat on every subscription event.
-// Security: RevenueCat sends a shared secret in the Authorization header.
-// Set REVENUECAT_WEBHOOK_AUTH_TOKEN in your .env and configure the same value
-// in RevenueCat Dashboard → Project → Webhooks → Authorization Header.
+// POST /api/schools/revenuecat-webhook
+// RevenueCat sends this request server-to-server on every subscription event.
+// Security: RevenueCat sends Authorization as "Bearer <token>" — must strip the prefix before comparing.
+// Configure REVENUECAT_WEBHOOK_AUTH_TOKEN in .env and the same value in RevenueCat Dashboard → Webhooks.
 router.post('/revenuecat-webhook', async (req, res) => {
   try {
-    // 1. Authenticate the request (shared secret header check)
-    const authHeader = req.headers['authorization'];
-    const expectedToken = process.env.REVENUECAT_WEBHOOK_AUTH_TOKEN;
+    // 1. Security Check: Extract token from "Bearer <token>" format
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.replace('Bearer ', '');
 
-    if (!expectedToken) {
-      console.error('[RC Webhook] REVENUECAT_WEBHOOK_AUTH_TOKEN is not set in environment.');
-      return res.status(500).send('Webhook secret not configured.');
+    if (!token || token !== process.env.REVENUECAT_WEBHOOK_AUTH_TOKEN) {
+      console.log("❌ Unauthorized webhook attempt. Header:", authHeader);
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    if (authHeader !== expectedToken) {
-      console.warn('[RC Webhook] Unauthorized request — invalid Authorization header.');
-      return res.status(401).send('Unauthorized');
-    }
-
-    // 2. Parse the event
     const { event } = req.body;
 
-    if (!event || !event.type) {
-      return res.status(400).send('Invalid webhook payload.');
+    // Log the entire payload for debugging
+    console.log('[RC Webhook] Full payload:', JSON.stringify(req.body, null, 2));
+
+    if (!event) {
+      console.warn('[RC Webhook] No event object in payload');
+      return res.status(200).send('Webhook received');
     }
 
-    console.log(`[RC Webhook] Received event: ${event.type} for app_user_id: ${event.app_user_id}`);
+    const { type, app_user_id, expiration_at_ms } = event;
 
-    // 3. The App User ID in RevenueCat must be set to the school's DB id.
-    //    Configure this in the mobile app: Purchases.logIn(schoolId.toString())
-    const schoolId = event.app_user_id;
-
-    if (!schoolId) {
-      console.warn('[RC Webhook] No app_user_id found in event. Ignoring.');
-      return res.status(200).send('Ignored — no app_user_id.');
+    if (!app_user_id) {
+      console.warn('[RC Webhook] No app_user_id in payload. Event type:', type);
+      return res.status(200).send('Webhook received');
     }
 
-    // 4. Handle relevant subscription events
-    if (event.type === 'INITIAL_PURCHASE' || event.type === 'RENEWAL') {
-      const expiryDate = event.expiration_at_ms
-        ? new Date(event.expiration_at_ms)
-        : null;
+    console.log(`[RC Webhook] Event: ${type} for School ID: ${app_user_id}`);
+
+    // 2. Handle relevant events
+    if (type === 'INITIAL_PURCHASE' || type === 'RENEWAL') {
+      const expiryDate = expiration_at_ms ? new Date(expiration_at_ms) : null;
 
       await pool.query(
-        `UPDATE schools SET
-          payment_status = 'completed',
-          subscription_expiry = $1,
-          updated_at = CURRENT_TIMESTAMP
-         WHERE id = $2`,
-        [expiryDate, schoolId]
+        'UPDATE schools SET payment_status = $1, subscription_expiry = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+        ['completed', expiryDate, app_user_id]
       );
-
-      console.log(`[RC Webhook] ✅ School ${schoolId} activated. Expiry: ${expiryDate}`);
-
-    } else if (event.type === 'CANCELLATION' || event.type === 'EXPIRATION') {
-      // Optional: mark subscription as expired so access can be gated on the backend
+      console.log(`✅ Subscription activated for School ID: ${app_user_id}. Expiry: ${expiryDate}`);
+    }
+    else if (type === 'EXPIRATION' || type === 'CANCELLATION') {
       await pool.query(
-        `UPDATE schools SET
-          payment_status = 'expired',
-          updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1`,
-        [schoolId]
+        'UPDATE schools SET payment_status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        ['expired', app_user_id]
       );
-
-      console.log(`[RC Webhook] ⚠️ School ${schoolId} subscription cancelled/expired.`);
-    } else {
-      console.log(`[RC Webhook] Unhandled event type "${event.type}". Ignoring.`);
+      console.log(`⚠️ Subscription removed for School ID: ${app_user_id} (${type})`);
+    }
+    else {
+      console.log(`[RC Webhook] Unhandled event type "${type}". Ignoring.`);
     }
 
-    // Always respond 200 quickly so RevenueCat doesn't retry
-    return res.status(200).send('Webhook Received');
+    // 3. Always respond with 200 OK
+    res.status(200).send('Webhook received');
 
   } catch (error) {
-    console.error('[RC Webhook] Error processing webhook:', error);
-    return res.status(500).send('Internal server error');
+    console.error('❌ [RC Webhook] Error:', error);
+    // Still return 200 so RevenueCat doesn't retry indefinitely
+    res.status(200).send('Webhook received');
   }
 });
 
