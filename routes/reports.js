@@ -492,8 +492,15 @@ router.get('/search/students', async (req, res) => {
       });
     }
 
-    const query = `
-      SELECT e.id as enrollment_id, s.first_name, s.last_name, g.display_name as class_name
+    // Get students with their enrollments
+    const studentQuery = `
+      SELECT DISTINCT 
+        e.id as enrollment_id, 
+        s.id as student_id,
+        s.first_name, 
+        s.last_name, 
+        g.display_name as class_name,
+        e.session_id
       FROM students s
       JOIN enrollments e ON e.student_id = s.id
       JOIN global_class_templates g ON e.class_id = g.id
@@ -503,16 +510,79 @@ router.get('/search/students', async (req, res) => {
       ORDER BY s.last_name ASC, s.first_name ASC
       LIMIT 15;
     `;
-    const result = await pool.query(query, [schoolId, `%${name}%`]);
+    const studentResult = await pool.query(studentQuery, [schoolId, `%${name}%`]);
+
+    // For each student, fetch their scores grouped by term
+    const studentsWithScores = await Promise.all(
+      studentResult.rows.map(async (student) => {
+        const scoresQuery = `
+          SELECT 
+            s.term,
+            s.subject_id,
+            sub.subject_name,
+            sub.subject_code,
+            s.ca1_score,
+            s.ca2_score,
+            s.ca3_score,
+            s.ca4_score,
+            s.exam_score,
+            s.total_score,
+            s.teacher_remark
+          FROM scores s
+          LEFT JOIN subjects sub ON s.subject_id = sub.id
+          WHERE s.enrollment_id = $1
+            AND s.session_id = $2
+            AND s.school_id = $3
+          ORDER BY s.term ASC, sub.subject_name ASC
+        `;
+        
+        const scoresResult = await pool.query(scoresQuery, [
+          student.enrollment_id,
+          student.session_id,
+          schoolId
+        ]);
+
+        // Group scores by term
+        const scoresByTerm = {};
+        scoresResult.rows.forEach(score => {
+          if (!scoresByTerm[score.term]) {
+            scoresByTerm[score.term] = [];
+          }
+          scoresByTerm[score.term].push({
+            subject_id: score.subject_id,
+            subject_name: score.subject_name,
+            subject_code: score.subject_code,
+            ca1_score: score.ca1_score,
+            ca2_score: score.ca2_score,
+            ca3_score: score.ca3_score,
+            ca4_score: score.ca4_score,
+            exam_score: score.exam_score,
+            total_score: score.total_score,
+            teacher_remark: score.teacher_remark
+          });
+        });
+
+        return {
+          ...student,
+          scores_by_term: scoresByTerm
+        };
+      })
+    );
+
+    console.log(`✓ Found ${studentsWithScores.length} student(s) with scores grouped by term`);
 
     res.json({
       success: true,
-      data: result.rows,
-      count: result.rows.length
+      data: studentsWithScores,
+      count: studentsWithScores.length
     });
   } catch (error) {
     console.error('❌ Student Search Error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      message: 'Failed to search students. Please try again.'
+    });
   }
 });
 

@@ -8,7 +8,12 @@ const nodemailer = require('nodemailer');
 const authMiddleware = require('../middleware/auth');
 const checkSubscription = require('../middleware/checkSubscription');
 const { validatePassword } = require('../utils/password-validator');
+const multer = require('multer');
+const { put } = require('@vercel/blob');
 require('dotenv').config();
+
+// Configure multer for memory storage
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Email transporter
 const transporter = nodemailer.createTransport({
@@ -566,7 +571,7 @@ router.post('/login', async (req, res) => {
  * @desc    Get logged-in student's enrollment history
  * @access  Private (Student) - Requires Active Subscription
  */
-router.get('/me/enrollments', authMiddleware.authenticateToken, checkSubscription, async (req, res) => {
+router.get('/me/enrollments', authMiddleware.authenticateToken, async (req, res) => {
   try {
     if (req.user?.type !== 'student') {
       return res.status(403).json({ success: false, error: 'This endpoint is for students only' });
@@ -610,7 +615,7 @@ router.get('/me/enrollments', authMiddleware.authenticateToken, checkSubscriptio
  * @desc    Get details for a specific session enrollment
  * @access  Private (Student) - Requires Active Subscription
  */
-router.get('/me/enrollments/:sessionId', authMiddleware.authenticateToken, checkSubscription, async (req, res) => {
+router.get('/me/enrollments/:sessionId', authMiddleware.authenticateToken, async (req, res) => {
   try {
     if (req.user?.type !== 'student') {
       return res.status(403).json({ success: false, error: 'This endpoint is for students only' });
@@ -650,7 +655,12 @@ router.get('/me/enrollments/:sessionId', authMiddleware.authenticateToken, check
 });
 
 
-router.put('/profile', authMiddleware.authenticateToken, checkSubscription, async (req, res) => {
+/**
+ * @route   PUT /api/students/profile
+ * @desc    Update student's own profile (includes photo upload)
+ * @access  Private (Student only)
+ */
+router.put('/profile', authMiddleware.authenticateToken, upload.single('photo'), async (req, res) => {
   const client = await pool.connect();
 
   try {
@@ -663,10 +673,83 @@ router.put('/profile', authMiddleware.authenticateToken, checkSubscription, asyn
     }
 
     const studentId = req.user?.studentId;
-    const {
+    let {
       firstName, lastName, email, phone, dateOfBirth,
-      gender, photo, currentPassword, newPassword
+      gender, currentPassword, newPassword
     } = req.body;
+
+    // Debugging logs
+    console.log('👤 Profile Update Request - Student:', studentId);
+    console.log('📦 Body:', { ...req.body, photo: req.body.photo ? '[REDACTED]' : null });
+    console.log('📁 File:', req.file ? { name: req.file.originalname, size: req.file.size } : 'No file');
+
+    let photo = null; // Default to null so COALESCE keeps old value if no update provided
+
+    // Validation
+    if (dateOfBirth) {
+      // Format check (YYYY-MM-DD)
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!dateRegex.test(dateOfBirth)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid Date of Birth format. Please use YYYY-MM-DD'
+        });
+      }
+
+      const dob = new Date(dateOfBirth);
+      if (isNaN(dob.getTime())) {
+        return res.status(400).json({
+          success: false,
+          error: 'The provided Date of Birth is not a valid date'
+        });
+      }
+
+      if (dob > new Date()) {
+        return res.status(400).json({
+          success: false,
+          error: 'Date of Birth cannot be in the future'
+        });
+      }
+    }
+
+    if (firstName !== undefined && firstName.trim() === '') {
+      return res.status(400).json({ success: false, error: 'First name cannot be empty' });
+    }
+    if (lastName !== undefined && lastName.trim() === '') {
+      return res.status(400).json({ success: false, error: 'Last name cannot be empty' });
+    }
+
+    // 1. Handle File Upload (Multer + @vercel/blob)
+    if (req.file) {
+      try {
+        console.log(`📸 Uploading profile photo for student ${studentId}...`);
+        const file = req.file;
+
+        // Validate file size (max 5MB)
+        const MAX_SIZE = 5 * 1024 * 1024;
+        if (file.size > MAX_SIZE) {
+          return res.status(400).json({ success: false, error: 'Photo is too large (max 5MB)' });
+        }
+
+        const cleanFileName = file.originalname.replace(/\s+/g, '-');
+        const uniqueFileName = `student-${studentId}-profile-${Date.now()}-${cleanFileName}`;
+
+        const blob = await put(uniqueFileName, file.buffer, {
+          access: 'public',
+          token: process.env.BLOB_READ_WRITE_TOKEN
+        });
+
+        photo = blob.url;
+        console.log('✅ Photo upload successful:', photo);
+      } catch (uploadError) {
+        console.error('❌ Photo upload failed:', uploadError);
+        return res.status(500).json({ success: false, error: 'Failed to upload photo: ' + uploadError.message });
+      }
+    }
+    // 2. Handle passed string URL (if any, though usually we keep old one if no new file)
+    else if (req.body.photo && typeof req.body.photo === 'string' && !req.body.photo.startsWith('[object')) {
+      photo = req.body.photo;
+    }
 
     await client.query('BEGIN');
 

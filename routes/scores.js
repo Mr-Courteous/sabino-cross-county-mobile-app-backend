@@ -840,6 +840,19 @@ router.get('/my-grades', async (req, res) => {
 
     const result = await pool.query(query, [studentId, schoolId, term, sessionId]);
 
+    // Check if no scores found for this term
+    if (result.rows.length === 0) {
+      console.warn(`⚠️ No scores found for student=${studentId}, term=${term}, session=${sessionId}`);
+      return res.status(404).json({
+        success: false,
+        message: 'No scores found',
+        error: `No scores have been recorded for Term ${term} in this academic session. Please check back later as scores may still be pending.`,
+        data: [],
+        summary: null,
+        count: 0
+      });
+    }
+
     // Calculate Summary Stats if grades exist
     let summary = null;
     if (result.rows.length > 0) {
@@ -881,18 +894,25 @@ router.get('/my-grades', async (req, res) => {
       }
     }
 
+    console.log(`✓ Scores retrieved: ${result.rowCount} subjects for student=${studentId}, term=${term}, session=${sessionId}`);
+
     res.json({
       success: true,
+      message: `Found scores for ${result.rowCount} subject(s)`,
       data: result.rows,
       summary: summary,
       count: result.rowCount
     });
 
   } catch (error) {
-    console.error('My Grades Error:', error);
+    console.error('❌ My Grades Error:', error);
     res.status(500).json({
       success: false,
-      error: error.message
+      message: 'Failed to retrieve grades',
+      error: error.message || 'An error occurred while fetching your grades. Please try again later.',
+      data: [],
+      summary: null,
+      count: 0
     });
   }
 });
