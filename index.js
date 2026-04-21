@@ -32,10 +32,11 @@ app.use(express.json());
 // 'dev' gives you color-coded status logs and response times
 app.use(morgan('dev')); 
 
-// OPTIONAL: Keep a custom logger for body inspection if needed
+// Custom logger for all incoming requests to help debug connectivity
 app.use((req, res, next) => {
+  console.log(`📡 [${new Date().toISOString()}] ${req.method} ${req.url}`);
   if (req.method !== 'GET' && Object.keys(req.body).length > 0) {
-    console.log('📦 Body Payload:', req.body);
+    console.log('📦 Body Payload:', JSON.stringify(req.body, null, 2));
   }
   next();
 });

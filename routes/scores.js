@@ -19,8 +19,8 @@ router.use(authMiddleware.authenticateToken);
  * - PostgreSQL Generated Column for automatic total_score calculation
  * 
  * CA Score Breakdown:
- *   - CA1, CA2, CA3, CA4: Individual continuous assessment scores (0-20 each)
- *   - Exam Score: End-of-term examination score (0-40)
+ *   - CA1, CA2, CA3, CA4: Individual continuous assessment scores (0-10 each)
+ *   - Exam Score: End-of-term examination score (0-60)
  *   - Total: Sum of all CA scores + Exam score = 0-100
  */
 
@@ -32,11 +32,11 @@ router.use(authMiddleware.authenticateToken);
  * @body    Single: {
  *            enrollment_id: Number,
  *            subject_id: Number,
- *            ca1: Number (0-20),
- *            ca2: Number (0-20),
- *            ca3: Number (0-20),
- *            ca4: Number (0-20),
- *            exam: Number (0-40),
+ *            ca1: Number (0-10),
+ *            ca2: Number (0-10),
+ *            ca3: Number (0-10),
+ *            ca4: Number (0-10),
+ *            exam: Number (0-60),
  *            session: String,
  *            term: String
  *          }
@@ -62,7 +62,10 @@ router.get('/sheet', async (req, res) => {
   try {
     // STRICT SECURITY: Extract schoolId ONLY from token, never from req.body or req.query
     const schoolId = req.user?.schoolId;
-    const { classId, subjectId, sessionId, termId } = req.query;
+    const classId = parseInt(req.query.classId);
+    const subjectId = parseInt(req.query.subjectId);
+    const sessionId = parseInt(req.query.sessionId);
+    const termId = parseInt(req.query.termId);
 
     if (!schoolId) {
       return res.status(401).json({
@@ -73,13 +76,14 @@ router.get('/sheet', async (req, res) => {
 
     // Validate query parameters
     if (!classId || !subjectId || !sessionId || !termId) {
+      console.error(`❌ Missing parameters in /sheet: classId=${classId}, subjectId=${subjectId}, sessionId=${sessionId}, termId=${termId}`);
       return res.status(400).json({
         success: false,
-        error: 'classId, subjectId, sessionId, and termId are required'
+        error: 'classId, subjectId, sessionId, and termId are required and must be valid numbers'
       });
     }
 
-    if (![1, 2, 3].includes(parseInt(termId))) {
+    if (![1, 2, 3].includes(termId)) {
       return res.status(400).json({
         success: false,
         error: 'termId must be 1, 2, or 3'
@@ -92,7 +96,7 @@ router.get('/sheet', async (req, res) => {
         s.first_name,
         s.last_name,
         e.id as enrollment_id,
-        COALESCE(sc.id, 0) as score_id,
+        sc.id as score_id,
         COALESCE(sc.ca1_score, NULL) as ca1_score,
         COALESCE(sc.ca2_score, NULL) as ca2_score,
         COALESCE(sc.ca3_score, NULL) as ca3_score,
@@ -121,6 +125,13 @@ router.get('/sheet', async (req, res) => {
     ]);
 
     console.log(`✓ Scoring sheet retrieved: ${result.rowCount} students for class=${classId}, subject=${subjectId}, session=${sessionId}, term=${termId}`);
+
+    // Log detailed student data with score_id values
+    result.rows.forEach((row, idx) => {
+      console.log(`  Student ${idx + 1}: ${row.first_name} ${row.last_name}`);
+      console.log(`    score_id: ${row.score_id} (type: ${typeof row.score_id})`);
+      console.log(`    has_scores: ${row.ca1_score || row.ca2_score || row.ca3_score || row.ca4_score || row.exam_score ? 'YES' : 'NO'}`);
+    });
 
     // Check if no students found
     if (result.rowCount === 0) {
@@ -162,11 +173,11 @@ router.get('/sheet', async (req, res) => {
  *            subject_id: Number,
  *            term_id: Number (1-3),
  *            sessionId: Number,
- *            ca1_score: Number (0-20, optional),
- *            ca2_score: Number (0-20, optional),
- *            ca3_score: Number (0-20, optional),
- *            ca4_score: Number (0-20, optional),
- *            exam_score: Number (0-40, optional)
+ *            ca1_score: Number (0-10, optional),
+ *            ca2_score: Number (0-10, optional),
+ *            ca3_score: Number (0-10, optional),
+ *            ca4_score: Number (0-10, optional),
+ *            exam_score: Number (0-60, optional)
  *          }
  *          Bulk: {
  *            scores: [
@@ -247,20 +258,20 @@ router.post('/record', async (req, res) => {
       // Validate score ranges (if provided)
       const caScores = [ca1_score, ca2_score, ca3_score, ca4_score];
       for (const ca of caScores) {
-        if (ca !== null && ca !== undefined && (ca < 0 || ca > 20)) {
+        if (ca !== null && ca !== undefined && (ca < 0 || ca > 10)) {
           return res.status(400).json({
             success: false,
             message: 'Validation Error',
-            error: `Score ${i + 1}: CA scores must be between 0 and 20`
+            error: `Score ${i + 1}: CA scores must be between 0 and 10`
           });
         }
       }
 
-      if (exam_score !== null && exam_score !== undefined && (exam_score < 0 || exam_score > 40)) {
+      if (exam_score !== null && exam_score !== undefined && (exam_score < 0 || exam_score > 60)) {
         return res.status(400).json({
           success: false,
           message: 'Validation Error',
-          error: `Score ${i + 1}: Exam score must be between 0 and 40`
+          error: `Score ${i + 1}: Exam score must be between 0 and 60`
         });
       }
 
@@ -563,7 +574,10 @@ router.post('/bulk-upsert', async (req, res) => {
 router.get('/class-sheet', async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
-    const { classId, subjectId, academicSession, term } = req.query;
+    const classId = parseInt(req.query.classId);
+    const subjectId = parseInt(req.query.subjectId);
+    const academicSession = req.query.academicSession;
+    const term = parseInt(req.query.term);
 
     if (!classId || !subjectId || !academicSession || !term) {
       return res.status(400).json({
@@ -573,7 +587,7 @@ router.get('/class-sheet', async (req, res) => {
       });
     }
 
-    if (![1, 2, 3].includes(parseInt(term))) {
+    if (![1, 2, 3].includes(term)) {
       return res.status(400).json({
         success: false,
         message: 'Validation Error',
@@ -802,10 +816,9 @@ router.get('/my-grades', async (req, res) => {
     }
 
     const query = `
-      SELECT 
+      SELECT
         s.id as score_id,
         COALESCE(sub.subject_name, 'Unknown Subject') as subject_name,
-        COALESCE(sub.subject_code, '') as subject_code,
         s.ca1_score,
         s.ca2_score,
         s.ca3_score,
@@ -831,7 +844,7 @@ router.get('/my-grades', async (req, res) => {
         AND s.term = $3
         AND s.session_id = $4
         AND s.school_id = $2
-      LEFT JOIN subjects sub ON s.subject_id = sub.id
+      LEFT JOIN global_subjects sub ON s.subject_id = sub.id
       WHERE e.student_id = $1
         AND e.school_id = $2
         AND e.session_id = $4
@@ -1430,26 +1443,49 @@ router.delete('/:scoreId', async (req, res) => {
     const schoolId = req.user?.schoolId;
     const { scoreId } = req.params;
 
+    console.log(`\n🗑️ DELETE SCORE REQUEST RECEIVED`);
+    console.log(`   scoreId: ${scoreId}`);
+    console.log(`   schoolId: ${schoolId}`);
+    console.log(`   user: ${JSON.stringify(req.user)}`);
+
+    if (!schoolId) {
+      console.error(`❌ DELETE: Missing schoolId from auth context`);
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized',
+        error: 'School ID missing from authentication'
+      });
+    }
+
+    console.log(`📝 Executing DELETE query: DELETE FROM scores WHERE id = $1 AND school_id = $2`);
+    console.log(`   Parameters: [${scoreId}, ${schoolId}]`);
+
     const result = await pool.query(
       'DELETE FROM scores WHERE id = $1 AND school_id = $2 RETURNING id',
       [scoreId, schoolId]
     );
 
+    console.log(`✅ DELETE query executed`);
+    console.log(`   Rows deleted: ${result.rowCount}`);
+
     if (result.rows.length === 0) {
+      console.warn(`⚠️ DELETE: Score not found with id=${scoreId}, schoolId=${schoolId}`);
       return res.status(404).json({
         success: false,
         message: 'Not Found',
-        error: 'Score record not found'
+        error: 'Score record not found or does not belong to your school'
       });
     }
 
+    console.log(`✅ Score deleted successfully: ${JSON.stringify(result.rows[0])}`);
     res.status(200).json({
       success: true,
-      message: 'Score record deleted successfully'
+      message: 'Score record deleted successfully',
+      data: result.rows[0]
     });
 
   } catch (error) {
-    console.error('Delete Score Error:', error);
+    console.error('❌ Delete Score Error:', error);
     res.status(500).json({
       success: false,
       message: 'Server Error',

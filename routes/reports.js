@@ -131,7 +131,7 @@ router.get('/download/official-report/:enrollmentId', async (req, res) => {
       LEFT JOIN scores sc ON sc.enrollment_id = e.id
         AND sc.term = $3 
         AND sc.session_id = $4
-      LEFT JOIN subjects sub ON sc.subject_id = sub.id
+      LEFT JOIN global_subjects sub ON sc.subject_id = sub.id
       LEFT JOIN academic_years ay ON sc.session_id = ay.id
       WHERE e.id = $1 
         AND e.school_id = $2
@@ -195,23 +195,36 @@ router.get('/download/official-report/:enrollmentId', async (req, res) => {
     console.log('Total rows returned:', data.length);
     console.log('====================================\n');
 
-    // 2. GENERATE AI INSIGHT
+    // 2. GENERATE UNIQUE AI INSIGHT
     let aiRemark = "The student has demonstrated effort this term.";
     try {
+      // Find highest and lowest subjects for context
+      const validScores = data.filter(r => r.total_score > 0);
+      const sorted = [...validScores].sort((a, b) => b.total_score - a.total_score);
+      const topSubject = sorted.length > 0 ? sorted[0].subject_name : "their studies";
+      const strugglingSubject = sorted.length > 1 ? sorted[sorted.length - 1].subject_name : "other areas";
+
       const performanceSummary = data.map(r => `${r.subject_name}: ${r.total_score}/100`).join(", ");
+
       const aiCompletion = await openai.chat.completions.create({
         model: "gpt-3.5-turbo",
         messages: [{
           role: "system",
-          content: "You are an expert school principal. Write a 2-sentence encouraging academic report card remark based on these grades."
+          content: `You are an expert school principal. Write a unique, 2-sentence formal report card remark.
+          STRICT RULES:
+          - NEVER say "Good job", "Keep it up", or "Great effort".
+          - Include the student's name (${pref.first_name}).
+          - Explicitly mention their excellence in ${topSubject}.
+          - Give a specific recommendation for ${strugglingSubject}.
+          - Make every comment sound scientifically different.`
         }, {
           role: "user",
-          content: `Student: ${pref.first_name}. Grades: ${performanceSummary}`
+          content: `Data: ${performanceSummary}`
         }]
       });
       aiRemark = aiCompletion.choices[0].message.content;
     } catch (aiErr) {
-      console.error("AI Remark failed, using fallback:", aiErr.message);
+      console.error("AI Remark failed:", aiErr.message);
     }
 
     // 3. BUILD THE PDF
@@ -520,7 +533,6 @@ router.get('/search/students', async (req, res) => {
             s.term,
             s.subject_id,
             sub.subject_name,
-            sub.subject_code,
             s.ca1_score,
             s.ca2_score,
             s.ca3_score,
@@ -529,13 +541,13 @@ router.get('/search/students', async (req, res) => {
             s.total_score,
             s.teacher_remark
           FROM scores s
-          LEFT JOIN subjects sub ON s.subject_id = sub.id
+          LEFT JOIN global_subjects sub ON s.subject_id = sub.id
           WHERE s.enrollment_id = $1
             AND s.session_id = $2
             AND s.school_id = $3
           ORDER BY s.term ASC, sub.subject_name ASC
         `;
-        
+
         const scoresResult = await pool.query(scoresQuery, [
           student.enrollment_id,
           student.session_id,
@@ -551,7 +563,6 @@ router.get('/search/students', async (req, res) => {
           scoresByTerm[score.term].push({
             subject_id: score.subject_id,
             subject_name: score.subject_name,
-            subject_code: score.subject_code,
             ca1_score: score.ca1_score,
             ca2_score: score.ca2_score,
             ca3_score: score.ca3_score,
@@ -578,8 +589,8 @@ router.get('/search/students', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Student Search Error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: error.message,
       message: 'Failed to search students. Please try again.'
     });
@@ -677,7 +688,7 @@ router.get('/data/student/:enrollmentId', async (req, res) => {
         ROUND(AVG(COALESCE(s2.ca1_score, 0) + COALESCE(s2.ca2_score, 0) + COALESCE(s2.ca3_score, 0) + 
                   COALESCE(s2.ca4_score, 0) + COALESCE(s2.exam_score, 0))::NUMERIC, 2) as class_average
       FROM scores s
-      JOIN subjects g ON s.subject_id = g.id
+      JOIN global_subjects g ON s.subject_id = g.id
       JOIN enrollments e ON s.enrollment_id = e.id
       JOIN enrollments e2 ON e2.class_id = e.class_id AND e2.session_id = e.session_id
       LEFT JOIN scores s2 ON s2.enrollment_id = e2.id 

@@ -71,11 +71,11 @@ School
 ## 📊 Score Composition
 
 ```
-CA1: 0-20  │
-CA2: 0-20  │ Continuous Assessment
-CA3: 0-20  │ (Over the term)
-CA4: 0-20  │
-Exam: 0-40 │ End-of-term exam
+CA1: 0-10  │
+CA2: 0-10  │ Continuous Assessment
+CA3: 0-10  │ (Over the term)
+CA4: 0-10  │
+Exam: 0-60 │ End-of-term exam
 ─────────────
 Total: 0-100
 ```
@@ -170,14 +170,14 @@ GET /api/scores/report-card/single/1?academicYear=2023/2024&term=1
 | `classId` | int | class pk | 3 |
 | `academicYear` | string | YYYY/YYYY | "2023/2024" |
 | `term` | int | 1, 2, 3 | 1 |
-| `ca1Score` | decimal | 0-20 | 15 |
-| `examScore` | decimal | 0-40 | 35 |
+| `ca1Score` | decimal | 0-10 | 8 |
+| `examScore` | decimal | 0-60 | 45 |
 
 ---
 
 ## ✅ Validation Rules
 
-✓ **Scores**: CA = 0-20, Exam = 0-40  
+✓ **Scores**: CA = 0-10, Exam = 0-60  
 ✓ **Year**: Format must be "2023/2024"  
 ✓ **Term**: Must be 1, 2, or 3  
 ✓ **Unique**: No duplicate (school + student + subject + year + term)  
@@ -256,7 +256,7 @@ The token must include `schoolId` for automatic school isolation.
 | Status | Error | Solution |
 |--------|-------|----------|
 | 400 | Missing required fields | Check all required params |
-| 400 | CA score must be 0-20 | Validate score ranges |
+| 400 | CA score must be 0-10 | Validate score ranges |
 | 400 | Term must be 1, 2, or 3 | Use valid term number |
 | 403 | Student not found in your school | Verify student belongs to school |
 | 404 | Score record not found | Check score ID |

@@ -36,11 +36,11 @@ Each student-subject record contains:
 
 | Component | Max | Purpose |
 |-----------|-----|---------|
-| CA1 | 20 | First continuous assessment |
-| CA2 | 20 | Second continuous assessment |
-| CA3 | 20 | Third continuous assessment |
-| CA4 | 20 | Fourth continuous assessment |
-| Exam | 40 | End-of-term examination |
+| CA1 | 10 | First continuous assessment |
+| CA2 | 10 | Second continuous assessment |
+| CA3 | 10 | Third continuous assessment |
+| CA4 | 10 | Fourth continuous assessment |
+| Exam | 60 | End-of-term examination |
 | **Total** | **100** | Sum of all components |
 
 ---
