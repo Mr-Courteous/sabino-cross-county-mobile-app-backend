@@ -8,7 +8,11 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Use Groq for cost-free, high-speed AI remarks
+const openai = new OpenAI({ 
+  apiKey: process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY,
+  baseURL: "https://api.groq.com/openai/v1"
+});
 
 // Helper function to safely load image from various sources (file path, base64, or URL)
 async function tryLoadImage(doc, imageSource, x, y, width, height, imageType = '') {
@@ -207,7 +211,7 @@ router.get('/download/official-report/:enrollmentId', async (req, res) => {
       const performanceSummary = data.map(r => `${r.subject_name}: ${r.total_score}/100`).join(", ");
 
       const aiCompletion = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
+        model: "llama3-70b-8192", // Fast and free on Groq
         messages: [{
           role: "system",
           content: `You are an expert school principal. Write a unique, 2-sentence formal report card remark.
@@ -216,10 +220,10 @@ router.get('/download/official-report/:enrollmentId', async (req, res) => {
           - Include the student's name (${pref.first_name}).
           - Explicitly mention their excellence in ${topSubject}.
           - Give a specific recommendation for ${strugglingSubject}.
-          - Make every comment sound scientifically different.`
+          - Tone: Sophisticated and pedagogical.`
         }, {
           role: "user",
-          content: `Data: ${performanceSummary}`
+          content: `Performance Data: ${performanceSummary}`
         }]
       });
       aiRemark = aiCompletion.choices[0].message.content;
