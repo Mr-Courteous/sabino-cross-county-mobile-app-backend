@@ -213,36 +213,63 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
     console.log('Total rows returned:', data.length);
     console.log('====================================\n');
 
-    // 2. GENERATE UNIQUE AI INSIGHT
-    let aiRemark = "The student has demonstrated effort this term.";
+    // 2. RETRIEVE OR GENERATE UNIQUE AI REMARK
+    let aiRemark = "The student continues to show steady progress in their academic pursuits.";
+    
     try {
-      // Find highest and lowest subjects for context
-      const validScores = data.filter(r => r.total_score > 0);
-      const sorted = [...validScores].sort((a, b) => b.total_score - a.total_score);
-      const topSubject = sorted.length > 0 ? sorted[0].subject_name : "their studies";
-      const strugglingSubject = sorted.length > 1 ? sorted[sorted.length - 1].subject_name : "other areas";
+      // Check if a remark already exists for this enrollment + term + session
+      const existingRemark = await pool.query(
+        `SELECT ai_remark FROM report_remarks 
+         WHERE enrollment_id = $1 AND term = $2 AND session_id = $3`,
+        [enrollmentId, termInt, sessionIdInt]
+      );
 
-      const performanceSummary = data.map(r => `${r.subject_name}: ${r.total_score}/100`).join(", ");
+      if (existingRemark.rows.length > 0) {
+        // Reuse the stored remark for consistency
+        aiRemark = existingRemark.rows[0].ai_remark;
+        console.log(`ℹ Reusing stored AI remark for Enrollment ${enrollmentId}`);
+      } else {
+        // Generate new remark with AI (Groq/Llama-3.3)
+        console.log(`🤖 Generating new AI remark for Enrollment ${enrollmentId}...`);
+        
+        // Contextual analysis for AI
+        const validScores = data.filter(r => r.total_score > 0);
+        const sorted = [...validScores].sort((a, b) => b.total_score - a.total_score);
+        const topSubject = sorted.length > 0 ? sorted[0].subject_name : "their studies";
+        const strugglingSubject = sorted.length > 1 ? sorted[sorted.length - 1].subject_name : "other areas";
+        const performanceSummary = data.map(r => `${r.subject_name}: ${r.total_score}/100`).join(", ");
 
-      const aiCompletion = await openai.chat.completions.create({
-        model: "llama3-70b-8192", // Fast and free on Groq
-        messages: [{
-          role: "system",
-          content: `You are an expert school principal. Write a unique, 2-sentence formal report card remark.
-          STRICT RULES:
-          - NEVER say "Good job", "Keep it up", or "Great effort".
-          - Include the student's name (${pref.first_name}).
-          - Explicitly mention their excellence in ${topSubject}.
-          - Give a specific recommendation for ${strugglingSubject}.
-          - Tone: Sophisticated and pedagogical.`
-        }, {
-          role: "user",
-          content: `Performance Data: ${performanceSummary}`
-        }]
-      });
-      aiRemark = aiCompletion.choices[0].message.content;
-    } catch (aiErr) {
-      console.error("AI Remark failed:", aiErr.message);
+        const aiCompletion = await openai.chat.completions.create({
+          model: "llama-3.3-70b-versatile",
+          messages: [{
+            role: "system",
+            content: `You are an expert school principal. Write a unique, VERY concise formal report card remark.
+            STRICT RULES:
+            - MAX LENGTH: 100 characters total.
+            - NEVER use generic phrases like "Good job".
+            - Include student name (${pref.first_name}).
+            - Mention excellence in ${topSubject} and a target for ${strugglingSubject}.
+            - Tone: Sophisticated, professional, but extremely brief.`
+          }, {
+            role: "user",
+            content: `Performance Data: ${performanceSummary}`
+          }]
+        });
+
+        aiRemark = aiCompletion.choices[0].message.content;
+
+        // Store it for future use (Persistence)
+        await pool.query(
+          `INSERT INTO report_remarks (enrollment_id, term, session_id, ai_remark)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (enrollment_id, term, session_id) DO UPDATE SET ai_remark = EXCLUDED.ai_remark`,
+          [enrollmentId, termInt, sessionIdInt, aiRemark]
+        );
+        console.log(`✓ New AI remark saved to database.`);
+      }
+    } catch (err) {
+      console.error("AI Remark/Cache Error:", err.message);
+      // Fallback remains the default aiRemark initialized above
     }
 
     // 3. BUILD THE PDF
@@ -906,4 +933,159 @@ router.get('/data/class/:classId', async (req, res) => {
   }
 });
 
-module.exports = router;
+// =====================================================================
+// REMARK REGENERATION (Admin Only)
+// =====================================================================
+
+/**
+ * @route   POST /api/reports/regenerate-remark/:enrollmentId
+ * @desc    Admin-only: Delete cached AI remark and immediately generate a fresh one
+ * @access  Private (School Admin — type: 'school')
+ * @body    { term: number, sessionId: number }
+ */
+router.post('/regenerate-remark/:enrollmentId', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const { enrollmentId } = req.params;
+    const { term, sessionId } = req.body;
+
+    if (!term || !sessionId) {
+      return res.status(400).json({ success: false, error: 'Both term and sessionId are required.' });
+    }
+
+    if (req.user.type !== 'school') {
+      return res.status(403).json({ success: false, error: 'Unauthorized. Only school administrators can regenerate remarks.' });
+    }
+
+    const termInt = parseInt(term);
+    const sessionIdInt = parseInt(sessionId);
+    const schoolId = req.user.schoolId;
+
+    // 1. Fetch student + scores data
+    const result = await pool.query(`
+      SELECT 
+        s.first_name, s.last_name,
+        sub.subject_name,
+        COALESCE(sc.ca1_score, 0) + COALESCE(sc.ca2_score, 0) + 
+        COALESCE(sc.ca3_score, 0) + COALESCE(sc.ca4_score, 0) + 
+        COALESCE(sc.exam_score, 0) AS total_score
+      FROM enrollments e
+      JOIN students s ON e.student_id = s.id
+      JOIN scores sc ON sc.enrollment_id = e.id AND sc.term = $3 AND sc.session_id = $4
+      JOIN global_subjects sub ON sc.subject_id = sub.id
+      WHERE e.id = $1 AND e.school_id = $2
+      ORDER BY sub.subject_name ASC
+    `, [enrollmentId, schoolId, termInt, sessionIdInt]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'No score data found for this enrollment, term, and session.' });
+    }
+
+    const pref = result.rows[0];
+    const data = result.rows;
+
+    // 2. Generate fresh AI remark
+    const validScores = data.filter(r => r.total_score > 0);
+    const sorted = [...validScores].sort((a, b) => b.total_score - a.total_score);
+    const topSubject = sorted.length > 0 ? sorted[0].subject_name : 'their studies';
+    const strugglingSubject = sorted.length > 1 ? sorted[sorted.length - 1].subject_name : 'other areas';
+    const performanceSummary = data.map(r => `${r.subject_name}: ${r.total_score}/100`).join(', ');
+
+    const aiCompletion = await openai.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{
+        role: 'system',
+        content: `You are an expert school principal. Write a VERY concise formal report card remark.
+        STRICT RULES:
+        - MAX LENGTH: 100 characters total.
+        - NEVER use generic phrases like "Good job".
+        - Include student name (${pref.first_name}).
+        - Mention excellence in ${topSubject} and a target for ${strugglingSubject}.
+        - Tone: Sophisticated, professional, but extremely brief.`
+      }, {
+        role: 'user',
+        content: `Performance Data: ${performanceSummary}`
+      }]
+    });
+
+    const newRemark = aiCompletion.choices[0].message.content;
+
+    // 3. Delete old remark (if any) and save new one
+    await pool.query(
+      `INSERT INTO report_remarks (enrollment_id, term, session_id, ai_remark)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (enrollment_id, term, session_id) DO UPDATE SET ai_remark = EXCLUDED.ai_remark`,
+      [enrollmentId, termInt, sessionIdInt, newRemark]
+    );
+
+    console.log(`✅ Remark regenerated for Enrollment ${enrollmentId}, Term ${termInt}, Session ${sessionIdInt}`);
+
+    res.json({
+      success: true,
+      message: 'Report remark has been successfully regenerated.',
+      remark: newRemark
+    });
+
+  } catch (error) {
+    console.error('❌ Remark Regeneration Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * @route   DELETE /api/reports/remark/:enrollmentId
+ * @desc    Admin-only: Clear cached AI remark to force fresh regeneration
+ *          on the next report card email/download request.
+ * @access  Private (School Admin only — type: 'school')
+ * @body    { term: number, sessionId: number }
+ */
+router.delete('/remark/:enrollmentId', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const { enrollmentId } = req.params;
+    const { term, sessionId } = req.body;
+
+    // Validate required params
+    if (!term || !sessionId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Both term and sessionId are required in the request body.'
+      });
+    }
+
+    // Security: Only school admins may clear remarks
+    if (req.user.type !== 'school') {
+      return res.status(403).json({
+        success: false,
+        error: 'Unauthorized. Only school administrators can regenerate AI remarks.'
+      });
+    }
+
+    const termInt = parseInt(term);
+    const sessionIdInt = parseInt(sessionId);
+
+    const result = await pool.query(
+      `DELETE FROM report_remarks
+       WHERE enrollment_id = $1 AND term = $2 AND session_id = $3`,
+      [enrollmentId, termInt, sessionIdInt]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No cached remark found for this enrollment, term, and session.'
+      });
+    }
+
+    console.log(`🗑️  Remark cleared for Enrollment ${enrollmentId}, Term ${termInt}, Session ${sessionIdInt}`);
+
+    res.json({
+      success: true,
+      message: 'Remark cleared. A fresh AI remark will be generated on the next report request.'
+    });
+
+  } catch (error) {
+    console.error('❌ Remark Regeneration Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+module.exports = router;
