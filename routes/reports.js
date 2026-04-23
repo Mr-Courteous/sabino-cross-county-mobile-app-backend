@@ -7,6 +7,16 @@ const OpenAI = require("openai"); // Assuming you use OpenAI for the AI report
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const nodemailer = require('nodemailer');
+
+// Reuse existing transporter configuration
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: 'inumiduncourteous@gmail.com',
+    pass: 'vvcx njbg cwac kuao', // Note: This should ideally be in .env for production
+  },
+});
 
 // Use Groq for cost-free, high-speed AI remarks
 const openai = new OpenAI({ 
@@ -89,13 +99,13 @@ function calculateGrade(score) {
 
 
 
-router.get('/download/official-report/:enrollmentId', async (req, res) => {
+router.post('/email/official-report/:enrollmentId', async (req, res) => {
   try {
     const { enrollmentId } = req.params;
-    const { term, sessionId } = req.query;
+    const { term, sessionId, email } = req.body;
     const schoolId = req.user?.schoolId;
 
-    // Convert query parameters to integers
+    // Convert parameters to integers
     const termInt = parseInt(term, 10);
     const sessionIdInt = parseInt(sessionId, 10);
 
@@ -103,7 +113,11 @@ router.get('/download/official-report/:enrollmentId', async (req, res) => {
       return res.status(400).json({ success: false, error: "Term and Session ID must be valid numbers" });
     }
 
-    console.log(`Downloading report for enrollment: ${enrollmentId}, term: ${termInt}, session: ${sessionIdInt}, school: ${schoolId}`);
+    if (!email || !email.includes('@')) {
+      return res.status(400).json({ success: false, error: "Valid email address is required" });
+    }
+
+    console.log(`Emailing report for enrollment: ${enrollmentId}, term: ${termInt}, session: ${sessionIdInt}, school: ${schoolId}, email: ${email}`);
 
     // 1. FETCH EVERYTHING
     // Includes CA1-4, exam score, and session name
@@ -233,6 +247,64 @@ router.get('/download/official-report/:enrollmentId', async (req, res) => {
 
     // 3. BUILD THE PDF
     const doc = new PDFDocument();
+    const buffers = [];
+
+    // Collect PDF data in buffer instead of piping to response
+    doc.on('data', (chunk) => {
+      buffers.push(chunk);
+    });
+
+    doc.on('end', async () => {
+      try {
+        const pdfBuffer = Buffer.concat(buffers);
+
+        // Generate filename
+        const studentName = `${pref.first_name} ${pref.last_name}`.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+        const className = pref.class_name || 'Class';
+        const sessionName = pref.session_name || `Session ${sessionIdInt}`;
+        const filename = `${studentName}_${className}_Term${termInt}_${sessionName}.pdf`.replace(/\s+/g, '_');
+
+        // Send email with PDF attachment
+        const mailOptions = {
+          from: '"School Management System" <inumiduncourteous@gmail.com>',
+          to: email,
+          subject: `Official Report Card - ${studentName}`,
+          html: `
+            <div style="font-family: sans-serif; text-align: center; border: 1px solid #ddd; padding: 20px;">
+              <h2 style="color: #333;">Official Report Card</h2>
+              <p>Your report card for ${studentName} has been generated and attached to this email.</p>
+              <p><strong>Student:</strong> ${studentName}</p>
+              <p><strong>Class:</strong> ${className}</p>
+              <p><strong>Term:</strong> ${termInt}</p>
+              <p><strong>Session:</strong> ${sessionName}</p>
+              <p style="color: #888; font-size: 12px;">This is an automated email from the School Management System.</p>
+            </div>
+          `,
+          attachments: [{
+            filename: filename,
+            content: pdfBuffer,
+            contentType: 'application/pdf'
+          }]
+        };
+
+        await transporter.sendMail(mailOptions);
+
+        console.log(`✓ Report emailed successfully to ${email}`);
+        res.json({
+          success: true,
+          message: `Report card has been sent to ${email}`,
+          filename: filename
+        });
+
+      } catch (emailError) {
+        console.error("Email sending failed:", emailError);
+        res.status(500).json({
+          success: false,
+          error: "PDF generated successfully but email sending failed",
+          details: emailError.message
+        });
+      }
+    });
 
     // STRICT VARIABLE ASSIGNMENT - Extract and validate theme color
     console.log('\n=== DEBUG: Database Values ===');
@@ -258,21 +330,12 @@ router.get('/download/official-report/:enrollmentId', async (req, res) => {
     console.log('FINAL Applied theme color:', themeColor);
     console.log('================================\n');
 
-    // Set response headers BEFORE piping
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'inline; filename=report_card.pdf');
-
-    // Handle errors from PDF generation - abort the response
+    // Handle errors from PDF generation
     doc.on('error', (err) => {
       console.error("PDF Generation Error:", err);
       doc.destroy();
-      if (!res.writableEnded) {
-        res.status(500).json({ success: false, error: err.message });
-      }
+      res.status(500).json({ success: false, error: err.message });
     });
-
-    // Pipe PDF to response before drawing
-    doc.pipe(res);
 
     // Header Branding with theme color background
     const schoolName = pref.school_name || "School Name";
