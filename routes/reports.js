@@ -841,40 +841,51 @@ router.get('/data/class/:classId', async (req, res) => {
     }
 
     const query = `
+      WITH StudentTotals AS (
+        SELECT 
+          e.id as enrollment_id,
+          st.id as student_id,
+          st.first_name,
+          st.last_name,
+          SUM(COALESCE(s.total_score, 0)) as aggregate_total
+        FROM enrollments e
+        JOIN students st ON e.student_id = st.id
+        LEFT JOIN scores s ON s.enrollment_id = e.id 
+                           AND s.term = $3 
+                           AND s.session_id = $4
+                           AND s.school_id = $2
+        WHERE e.class_id = $1 
+          AND e.school_id = $2 
+          AND e.session_id = $4
+        GROUP BY e.id, st.id
+      ),
+      RankedStudents AS (
+        SELECT 
+          *,
+          RANK() OVER (ORDER BY aggregate_total DESC) as student_rank
+        FROM StudentTotals
+      )
       SELECT 
-        e.id as enrollment_id, 
-        st.first_name, 
-        st.last_name,
-        g.subject_name as subject_name,
+        r.*,
+        g.subject_name,
         COALESCE(s.ca1_score, 0) as ca1_score,
         COALESCE(s.ca2_score, 0) as ca2_score,
         COALESCE(s.ca3_score, 0) as ca3_score,
         COALESCE(s.ca4_score, 0) as ca4_score,
         COALESCE(s.exam_score, 0) as exam_score,
-        (COALESCE(s.ca1_score, 0) + COALESCE(s.ca2_score, 0) + COALESCE(s.ca3_score, 0) + 
-         COALESCE(s.ca4_score, 0) + COALESCE(s.exam_score, 0)) as subject_total,
-        ROUND(AVG(COALESCE(s2.ca1_score, 0) + COALESCE(s2.ca2_score, 0) + COALESCE(s2.ca3_score, 0) + 
-                  COALESCE(s2.ca4_score, 0) + COALESCE(s2.exam_score, 0))::NUMERIC, 2) as subject_class_average,
-        RANK() OVER (PARTITION BY e.class_id ORDER BY 
-          (COALESCE(s.ca1_score, 0) + COALESCE(s.ca2_score, 0) + COALESCE(s.ca3_score, 0) + 
-           COALESCE(s.ca4_score, 0) + COALESCE(s.exam_score, 0)) DESC) as student_rank
-      FROM enrollments e
-      JOIN students st ON e.student_id = st.id
-      LEFT JOIN scores s ON s.enrollment_id = e.id 
+        COALESCE(s.total_score, 0) as subject_total,
+        ROUND(AVG(COALESCE(s2.total_score, 0)) OVER (PARTITION BY s.subject_id), 2) as subject_class_average
+      FROM RankedStudents r
+      LEFT JOIN scores s ON s.enrollment_id = r.enrollment_id 
                          AND s.term = $3 
                          AND s.session_id = $4
-      LEFT JOIN subjects g ON s.subject_id = g.id
-      LEFT JOIN enrollments e2 ON e2.class_id = e.class_id 
-                               AND e2.session_id = e.session_id
-      LEFT JOIN scores s2 ON s2.enrollment_id = e2.id 
-                          AND s2.subject_id = s.subject_id 
-                          AND s2.term = s.term 
-                          AND s2.session_id = s.session_id
-      WHERE e.class_id = $1 
-        AND e.school_id = $2 
-        AND e.session_id = $4
-      GROUP BY e.id, st.first_name, st.last_name, g.subject_name, s.ca1_score, s.ca2_score, s.ca3_score, s.ca4_score, s.exam_score, s.subject_id
-      ORDER BY st.last_name ASC, st.first_name ASC, g.subject_name;
+                         AND s.school_id = $2
+      LEFT JOIN global_subjects g ON s.subject_id = g.id
+      LEFT JOIN scores s2 ON s2.subject_id = s.subject_id 
+                          AND s2.term = $3 
+                          AND s2.session_id = $4
+                          AND s2.school_id = $2
+      ORDER BY r.student_rank ASC, g.subject_name ASC;
     `;
 
     const result = await pool.query(query, [classId, schoolId, term, sessionId]);
@@ -903,19 +914,20 @@ router.get('/data/class/:classId', async (req, res) => {
         acc.push(student);
       }
 
-      // Add subject if it exists (avoid duplicates from the rank window function)
+      // Add subject if it exists
       if (row.subject_name && !student.subjects.some(subj => subj.subject === row.subject_name)) {
         student.subjects.push({
           subject: row.subject_name,
+          subject_name: row.subject_name,
           ca1_score: row.ca1_score,
           ca2_score: row.ca2_score,
           ca3_score: row.ca3_score,
           ca4_score: row.ca4_score,
           exam_score: row.exam_score,
           subject_total: row.subject_total,
+          total_score: row.subject_total,
           subject_class_average: row.subject_class_average
         });
-        student.grand_total += row.subject_total;
       }
 
       return acc;
