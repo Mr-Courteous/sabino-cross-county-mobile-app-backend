@@ -1088,4 +1088,355 @@ router.delete('/remark/:enrollmentId', authMiddleware.authenticateToken, async (
   }
 });
 
-module.exports = router;
+// =====================================================================
+// PDF PREVIEW ENDPOINTS (Returns base64 for frontend rendering)
+// =====================================================================
+
+/**
+ * @route   GET /api/reports/preview/official-report/:enrollmentId
+ * @desc    Generate PDF preview without emailing - returns base64 encoded PDF
+ * @access  Private
+ * @query   term, sessionId
+ */
+router.get('/preview/official-report/:enrollmentId', async (req, res) => {
+  try {
+    const { enrollmentId } = req.params;
+    const { term, sessionId } = req.query;
+    const schoolId = req.user?.schoolId;
+
+    // Convert parameters to integers
+    const termInt = parseInt(term, 10);
+    const sessionIdInt = parseInt(sessionId, 10);
+
+    if (!termInt || !sessionIdInt || isNaN(termInt) || isNaN(sessionIdInt)) {
+      return res.status(400).json({ success: false, error: "Term and Session ID must be valid numbers" });
+    }
+
+    console.log(`Generating PDF preview for enrollment: ${enrollmentId}, term: ${termInt}, session: ${sessionIdInt}`);
+
+    // 1. FETCH DATA - Same as email route
+    const dataQuery = `
+      SELECT 
+        s.first_name, 
+        s.last_name, 
+        s.photo as photo_url,
+        sch.name as school_name,
+        pref.logo_url, 
+        pref.stamp_url, 
+        pref.theme_color, 
+        pref.header_text,
+        c.display_name as class_name,
+        COALESCE(sub.subject_name, 'Unknown Subject') as subject_name,
+        COALESCE(sc.ca1_score, 0) as ca1_score,
+        COALESCE(sc.ca2_score, 0) as ca2_score,
+        COALESCE(sc.ca3_score, 0) as ca3_score,
+        COALESCE(sc.ca4_score, 0) as ca4_score,
+        COALESCE(sc.exam_score, 0) as exam_score,
+        COALESCE(sc.total_score, 0) as total_score,
+        COALESCE(sc.teacher_remark, '') as teacher_remark,
+        COALESCE(ay.session_name, '') as session_name
+      FROM enrollments e
+      JOIN students s ON e.student_id = s.id
+      JOIN schools sch ON s.school_id = sch.id
+      LEFT JOIN school_preferences pref ON pref.school_id = sch.id
+      LEFT JOIN global_class_templates c ON e.class_id = c.id
+      LEFT JOIN scores sc ON sc.enrollment_id = e.id
+        AND sc.term = $3 
+        AND sc.session_id = $4
+      LEFT JOIN global_subjects sub ON sc.subject_id = sub.id
+      LEFT JOIN academic_years ay ON sc.session_id = ay.id
+      WHERE e.id = $1 
+        AND e.school_id = $2
+        AND sc.id IS NOT NULL
+      ORDER BY sub.subject_name ASC
+    `;
+
+    const result = await pool.query(dataQuery, [enrollmentId, schoolId, termInt, sessionIdInt]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "No report data found for this enrollment, term, and session."
+      });
+    }
+
+    const data = result.rows;
+    const pref = data[0];
+
+    // 2. GET AI REMARK - Same as email route
+    let aiRemark = "The student continues to show steady progress in their academic pursuits.";
+    
+    try {
+      const existingRemark = await pool.query(
+        `SELECT ai_remark FROM report_remarks 
+         WHERE enrollment_id = $1 AND term = $2 AND session_id = $3`,
+        [enrollmentId, termInt, sessionIdInt]
+      );
+
+      if (existingRemark.rows.length > 0) {
+        aiRemark = existingRemark.rows[0].ai_remark;
+      }
+    } catch (err) {
+      console.error("AI Remark retrieval error:", err.message);
+    }
+
+    // 3. BUILD PDF - Same logic as email route but collect as base64
+    const doc = new PDFDocument();
+    const buffers = [];
+
+    doc.on('data', (chunk) => {
+      buffers.push(chunk);
+    });
+
+    doc.on('end', async () => {
+      try {
+        const pdfBuffer = Buffer.concat(buffers);
+        const base64Pdf = pdfBuffer.toString('base64');
+
+        res.json({
+          success: true,
+          pdfBase64: base64Pdf,
+          fileName: `Report_${pref.first_name}_${pref.last_name}_Term${termInt}.pdf`.replace(/\s+/g, '_')
+        });
+      } catch (err) {
+        console.error("PDF preview generation error:", err);
+        res.status(500).json({ success: false, error: "Failed to generate PDF" });
+      }
+    });
+
+    // Generate PDF using same logic as email route
+    let themeColor = '#2563EB';
+    if (pref.theme_color && typeof pref.theme_color === 'string' && pref.theme_color.trim().length > 0) {
+      themeColor = pref.theme_color.trim();
+    }
+
+    // Add page header, student info, scores table (same as email route)
+    doc.fontSize(16).font('Helvetica-Bold').fillColor(themeColor).text('OFFICIAL REPORT CARD', 50, 30);
+    doc.fontSize(10).fillColor('#666').font('Helvetica').text(`${pref.school_name || 'School'}`, 50, 50);
+
+    // Add student info
+    doc.fontSize(14).fillColor(themeColor).font('Helvetica-Bold').text(`${pref.first_name} ${pref.last_name}`, 50, 100);
+    doc.fontSize(10).fillColor('#555').font('Helvetica').text(`Class: ${pref.class_name}`, 50, 120);
+    doc.fontSize(10).fillColor('#666').font('Helvetica').text(`Term ${termInt} • ${pref.session_name}`, 50, 135);
+
+    // Deduplicate data by subject
+    const uniqueSubjects = {};
+    data.forEach(row => {
+      const subjectKey = row.subject_name;
+      if (!uniqueSubjects[subjectKey]) {
+        uniqueSubjects[subjectKey] = row;
+      }
+    });
+    const deduplicatedData = Object.values(uniqueSubjects);
+
+    // Add scores table
+    const tableStartY = 165;
+    const subjectColX = 50;
+    const ca1ColX = 160;
+    const ca2ColX = 210;
+    const ca3ColX = 260;
+    const ca4ColX = 310;
+    const examColX = 360;
+    const totalColX = 410;
+    const colWidth = 45;
+    const tableWidth = 415;
+    const rowHeight = 18;
+
+    // Header
+    doc.fillColor(themeColor).rect(subjectColX, tableStartY, tableWidth, 25).fill();
+    doc.strokeColor(themeColor).lineWidth(2);
+    doc.rect(subjectColX, tableStartY, tableWidth, 25).stroke();
+
+    doc.fillColor('#ffffff').fontSize(8).font('Helvetica-Bold');
+    doc.text('Subject', subjectColX + 5, tableStartY + 6, { width: 100 });
+    doc.text('CA1', ca1ColX, tableStartY + 6, { width: colWidth, align: 'center' });
+    doc.text('CA2', ca2ColX, tableStartY + 6, { width: colWidth, align: 'center' });
+    doc.text('CA3', ca3ColX, tableStartY + 6, { width: colWidth, align: 'center' });
+    doc.text('CA4', ca4ColX, tableStartY + 6, { width: colWidth, align: 'center' });
+    doc.text('Exam', examColX, tableStartY + 6, { width: colWidth, align: 'center' });
+    doc.text('Total', totalColX, tableStartY + 6, { width: colWidth, align: 'center' });
+
+    // Body
+    let tableY = tableStartY + 32;
+    doc.font('Helvetica');
+    doc.strokeColor('#ddd').lineWidth(0.5);
+
+    deduplicatedData.forEach((row, index) => {
+      if (index % 2 === 0) {
+        doc.fillColor('#f9f9f9').rect(subjectColX, tableY - 5, tableWidth, rowHeight).fill();
+      }
+
+      doc.strokeColor('#e0e0e0').lineWidth(0.5);
+      doc.moveTo(subjectColX, tableY + 13).lineTo(subjectColX + tableWidth, tableY + 13).stroke();
+      doc.moveTo(ca1ColX, tableY - 5).lineTo(ca1ColX, tableY + 13).stroke();
+      doc.moveTo(ca2ColX, tableY - 5).lineTo(ca2ColX, tableY + 13).stroke();
+      doc.moveTo(ca3ColX, tableY - 5).lineTo(ca3ColX, tableY + 13).stroke();
+      doc.moveTo(ca4ColX, tableY - 5).lineTo(ca4ColX, tableY + 13).stroke();
+      doc.moveTo(examColX, tableY - 5).lineTo(examColX, tableY + 13).stroke();
+      doc.moveTo(totalColX, tableY - 5).lineTo(totalColX, tableY + 13).stroke();
+
+      doc.fillColor('#000').fontSize(9);
+      doc.text(row.subject_name.substring(0, 15), subjectColX + 5, tableY - 3);
+      doc.text(String(row.ca1_score), ca1ColX, tableY - 3, { width: colWidth, align: 'center' });
+      doc.text(String(row.ca2_score), ca2ColX, tableY - 3, { width: colWidth, align: 'center' });
+      doc.text(String(row.ca3_score), ca3ColX, tableY - 3, { width: colWidth, align: 'center' });
+      doc.text(String(row.ca4_score), ca4ColX, tableY - 3, { width: colWidth, align: 'center' });
+      doc.text(String(row.exam_score), examColX, tableY - 3, { width: colWidth, align: 'center' });
+      doc.text(String(row.total_score), totalColX, tableY - 3, { width: colWidth, align: 'center' });
+
+      tableY += rowHeight;
+    });
+
+    // Add AI remark
+    doc.fontSize(10).fillColor('#333').font('Helvetica-Bold').text('Principal\'s Remark:', 50, tableY + 20);
+    doc.fontSize(9).fillColor('#555').font('Helvetica').text(aiRemark, 50, tableY + 40, { width: 450 });
+
+    doc.end();
+
+  } catch (error) {
+    console.error('❌ PDF Preview Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * @route   GET /api/reports/preview/student-grades/:enrollmentId
+ * @desc    Generate student grades PDF preview - returns base64 encoded PDF
+ * @access  Private (Student)
+ * @query   term, sessionId
+ */
+router.get('/preview/student-grades/:enrollmentId', async (req, res) => {
+  try {
+    const { enrollmentId } = req.params;
+    const { term, sessionId } = req.query;
+    const studentId = req.user?.studentId;
+
+    const termInt = parseInt(term, 10);
+    const sessionIdInt = parseInt(sessionId, 10);
+
+    if (!termInt || !sessionIdInt) {
+      return res.status(400).json({ success: false, error: "Term and sessionId are required" });
+    }
+
+    // Security: Student can only preview their own grades
+    const ownershipCheck = await pool.query(
+      'SELECT id FROM enrollments WHERE id = $1 AND student_id = $2',
+      [enrollmentId, studentId]
+    );
+
+    if (ownershipCheck.rows.length === 0) {
+      return res.status(403).json({ success: false, error: "Unauthorized" });
+    }
+
+    // Fetch grades data
+    const query = `
+      SELECT 
+        s.first_name, s.last_name, s.photo,
+        sch.name as school_name,
+        c.display_name as class_name,
+        pref.theme_color,
+        pref.logo_url,
+        sub.subject_name,
+        sc.ca1_score, sc.ca2_score, sc.ca3_score, sc.ca4_score, sc.exam_score, sc.total_score,
+        ay.session_name
+      FROM enrollments e
+      JOIN students s ON e.student_id = s.id
+      JOIN schools sch ON s.school_id = sch.id
+      LEFT JOIN school_preferences pref ON pref.school_id = sch.id
+      LEFT JOIN global_class_templates c ON e.class_id = c.id
+      LEFT JOIN scores sc ON sc.enrollment_id = e.id AND sc.term = $3 AND sc.session_id = $4
+      LEFT JOIN global_subjects sub ON sc.subject_id = sub.id
+      LEFT JOIN academic_years ay ON sc.session_id = ay.id
+      WHERE e.id = $1 AND sc.id IS NOT NULL
+      ORDER BY sub.subject_name ASC
+    `;
+
+    const result = await pool.query(query, [enrollmentId, termInt, sessionIdInt]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: "No grade data found" });
+    }
+
+    const data = result.rows;
+    const student = data[0];
+
+    // Generate PDF
+    const doc = new PDFDocument();
+    const buffers = [];
+
+    doc.on('data', (chunk) => buffers.push(chunk));
+    doc.on('end', async () => {
+      try {
+        const pdfBuffer = Buffer.concat(buffers);
+        const base64Pdf = pdfBuffer.toString('base64');
+
+        res.json({
+          success: true,
+          pdfBase64: base64Pdf,
+          fileName: `Grades_${student.first_name}_${student.last_name}_Term${termInt}.pdf`.replace(/\s+/g, '_')
+        });
+      } catch (err) {
+        res.status(500).json({ success: false, error: "Failed to generate PDF" });
+      }
+    });
+
+    let themeColor = '#2563EB';
+    if (student.theme_color && student.theme_color.trim()) {
+      themeColor = student.theme_color.trim();
+    }
+
+    // Build PDF
+    doc.fontSize(16).font('Helvetica-Bold').fillColor(themeColor).text('ACADEMIC GRADES', 50, 30);
+    doc.fontSize(10).fillColor('#666').font('Helvetica').text(student.school_name, 50, 50);
+    doc.fontSize(14).fillColor(themeColor).font('Helvetica-Bold').text(`${student.first_name} ${student.last_name}`, 50, 100);
+    doc.fontSize(10).fillColor('#555').font('Helvetica').text(`Class: ${student.class_name}`, 50, 120);
+    doc.fontSize(10).text(`Term ${termInt} • ${student.session_name}`, 50, 135);
+
+    // Deduplicate by subject
+    const uniqueGrades = {};
+    data.forEach(row => {
+      if (!uniqueGrades[row.subject_name]) {
+        uniqueGrades[row.subject_name] = row;
+      }
+    });
+    const grades = Object.values(uniqueGrades);
+
+    // Scores table
+    const tableY = 165;
+    doc.fillColor(themeColor).rect(50, tableY, 415, 25).fill();
+    doc.strokeColor(themeColor).lineWidth(2).rect(50, tableY, 415, 25).stroke();
+    doc.fillColor('#fff').fontSize(8).font('Helvetica-Bold');
+    doc.text('Subject', 60, tableY + 6);
+    doc.text('CA1', 160, tableY + 6, { width: 45, align: 'center' });
+    doc.text('CA2', 210, tableY + 6, { width: 45, align: 'center' });
+    doc.text('CA3', 260, tableY + 6, { width: 45, align: 'center' });
+    doc.text('CA4', 310, tableY + 6, { width: 45, align: 'center' });
+    doc.text('Exam', 360, tableY + 6, { width: 45, align: 'center' });
+    doc.text('Total', 410, tableY + 6, { width: 45, align: 'center' });
+
+    let rowY = tableY + 32;
+    doc.font('Helvetica').fillColor('#000').fontSize(9);
+    grades.forEach((grade, idx) => {
+      if (idx % 2 === 0) {
+        doc.fillColor('#f9f9f9').rect(50, rowY - 5, 415, 18).fill();
+        doc.fillColor('#000');
+      }
+      doc.text(grade.subject_name.substring(0, 15), 60, rowY - 3);
+      doc.text(String(grade.ca1_score || 0), 160, rowY - 3, { width: 45, align: 'center' });
+      doc.text(String(grade.ca2_score || 0), 210, rowY - 3, { width: 45, align: 'center' });
+      doc.text(String(grade.ca3_score || 0), 260, rowY - 3, { width: 45, align: 'center' });
+      doc.text(String(grade.ca4_score || 0), 310, rowY - 3, { width: 45, align: 'center' });
+      doc.text(String(grade.exam_score || 0), 360, rowY - 3, { width: 45, align: 'center' });
+      doc.text(String(grade.total_score || 0), 410, rowY - 3, { width: 45, align: 'center' });
+      rowY += 18;
+    });
+
+    doc.end();
+
+  } catch (error) {
+    console.error('❌ Student Grades Preview Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+module.exports = router;

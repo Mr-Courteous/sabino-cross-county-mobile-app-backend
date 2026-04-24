@@ -1204,6 +1204,7 @@ router.get('/', authMiddleware.authenticateToken, async (req, res) => {
         s.id,
         s.first_name,
         s.last_name,
+        s.date_of_birth,
         s.registration_number,
         s.gender,
         s.email,

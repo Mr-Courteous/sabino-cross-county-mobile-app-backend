@@ -701,7 +701,9 @@ router.get('/me', authMiddleware.authenticateToken, async (req, res) => {
         s.id, 
         s.registration_code, 
         s.name, 
-        s.address, 
+        s.address,
+        s.city,
+        s.state,
         s.country, 
         s.phone, 
         s.email, 
@@ -733,6 +735,45 @@ router.get('/me', authMiddleware.authenticateToken, async (req, res) => {
       success: false,
       message: 'Server error retrieving profile'
     });
+  }
+});
+
+// Update current school details using token
+router.put('/me', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const schoolId = req.user?.id;
+    if (!schoolId) {
+      return res.status(401).json({ success: false, error: 'Authentication missing' });
+    }
+
+    const { name, address, city, state, phone, email } = req.body;
+
+    const result = await pool.query(
+      `UPDATE schools SET 
+       name = COALESCE($1, name), 
+       address = COALESCE($2, address), 
+       city = COALESCE($3, city), 
+       state = COALESCE($4, state), 
+       phone = COALESCE($5, phone), 
+       email = COALESCE($6, email), 
+       updated_at = CURRENT_TIMESTAMP 
+       WHERE id = $7 
+       RETURNING *`,
+      [name, address, city, state, phone, email, schoolId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'School not found' });
+    }
+
+    res.json({
+      success: true,
+      message: 'School profile updated successfully',
+      data: result.rows[0],
+    });
+  } catch (error) {
+    console.error('Update school profile error:', error);
+    res.status(500).json({ success: false, error: 'Server error updating profile' });
   }
 });
 
