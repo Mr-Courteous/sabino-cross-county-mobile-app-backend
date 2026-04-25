@@ -122,7 +122,8 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
     // 1. FETCH EVERYTHING
     // Includes CA1-4, exam score, and session name
     const dataQuery = `
-      SELECT 
+      SELECT Tap to change photo
+
         s.first_name, 
         s.last_name, 
         s.photo as photo_url,
