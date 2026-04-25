@@ -1830,6 +1830,64 @@ router.delete('/enrollments/:enrollmentId', authMiddleware.authenticateToken, as
 
 
 /**
+ * @route   POST /api/students/email/template
+ * @desc    Sends the bulk enrollment CSV template to the specified email
+ * @access  Private
+ */
+router.post('/email/template', authMiddleware.authenticateToken, async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ success: false, error: "Recipient email is required." });
+    }
+
+    const csvContent = "firstName,lastName,email,phone,dateOfBirth,classId,studentNumber,gender\nJohn,Doe,john@example.com,1234567890,2005-08-16,1,STU-001,Male";
+
+    const mailOptions = {
+      from: '"Sabino Registry" <inumiduncourteous@gmail.com>',
+      to: email,
+      subject: "📋 Student Bulk Enrollment Template",
+      html: `
+        <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
+          <h2 style="color: #0F172A; text-align: center;">Bulk Enrollment Template</h2>
+          <p>Hello,</p>
+          <p>You requested a template for bulk student enrollment. Attached to this email is a CSV file that you can use to prepare your data.</p>
+          <div style="background-color: #F8FAFC; padding: 15px; border-radius: 8px; border-left: 4px solid #FACC15; margin: 20px 0;">
+            <p style="margin: 0; font-weight: bold; color: #334155;">Instructions:</p>
+            <ul style="margin: 10px 0 0 0; color: #475569; font-size: 14px;">
+              <li>Keep the column headers exactly as they are.</li>
+              <li>Ensure <strong>classId</strong> matches the IDs in your school dashboard.</li>
+              <li>Save as .csv before uploading back to the portal.</li>
+            </ul>
+          </div>
+          <p style="color: #64748B; font-size: 12px; text-align: center; margin-top: 30px;">
+            &copy; ${new Date().getFullYear()} Sabino Academy Management System
+          </p>
+        </div>
+      `,
+      attachments: [
+        {
+          filename: 'student_bulk_template.csv',
+          content: csvContent
+        }
+      ]
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    res.status(200).json({
+      success: true,
+      message: "The template has been dispatched successfully."
+    });
+
+  } catch (error) {
+    console.error("Email Dispatch Error:", error);
+    res.status(500).json({ success: false, error: "Failed to dispatch email template." });
+  }
+});
+
+
+/**
  * @route   POST /api/students/self-enroll
  * @desc    Allows a logged-in student to enroll themselves for a specific session
  * @access  Private (Student only)
