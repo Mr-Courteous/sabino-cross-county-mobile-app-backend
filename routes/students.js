@@ -977,6 +977,14 @@ router.post('/bulk', authMiddleware.authenticateToken, async (req, res) => {
   } catch (error) {
     await client.query('ROLLBACK');
     console.error("❌ Bulk Processing Error:", error);
+    
+    if (error.code === '23505') {
+      return res.status(409).json({
+        success: false,
+        error: 'A student with this registration number or email already exists.'
+      });
+    }
+
     res.status(500).json({ success: false, error: error.message });
   } finally {
     client.release();
@@ -1329,6 +1337,15 @@ router.put('/:studentId', authMiddleware.authenticateToken, async (req, res) => 
     });
   } catch (error) {
     console.error("Update Error:", error.message);
+    
+    if (error.code === '23505') {
+      return res.status(409).json({
+        success: false,
+        message: 'Conflict',
+        error: 'This registration number or email is already assigned to another student.'
+      });
+    }
+
     res.status(500).json({ success: false, message: 'Update failed', error: error.message });
   }
 });

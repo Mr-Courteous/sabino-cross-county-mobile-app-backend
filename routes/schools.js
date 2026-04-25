@@ -746,7 +746,7 @@ router.put('/me', authMiddleware.authenticateToken, async (req, res) => {
       return res.status(401).json({ success: false, error: 'Authentication missing' });
     }
 
-    const { name, address, city, state, phone, email } = req.body;
+    const { name, address, city, state, phone, email, registration_code } = req.body;
 
     const result = await pool.query(
       `UPDATE schools SET 
@@ -756,10 +756,11 @@ router.put('/me', authMiddleware.authenticateToken, async (req, res) => {
        state = COALESCE($4, state), 
        phone = COALESCE($5, phone), 
        email = COALESCE($6, email), 
+       registration_code = COALESCE($7, registration_code), 
        updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $7 
+       WHERE id = $8 
        RETURNING *`,
-      [name, address, city, state, phone, email, schoolId]
+      [name, address, city, state, phone, email, registration_code, schoolId]
     );
 
     if (result.rows.length === 0) {
@@ -781,7 +782,7 @@ router.put('/me', authMiddleware.authenticateToken, async (req, res) => {
 router.put('/:schoolId', authMiddleware.authenticateToken, authMiddleware.checkSchoolOwnership, async (req, res) => {
   try {
     const { schoolId } = req.params;
-    const { name, address, city, state, country, phone, email } = req.body;
+    const { name, address, city, state, country, phone, email, registration_code } = req.body;
 
     const result = await pool.query(
       `UPDATE schools SET 
@@ -792,10 +793,11 @@ router.put('/:schoolId', authMiddleware.authenticateToken, authMiddleware.checkS
        country = COALESCE($5, country), 
        phone = COALESCE($6, phone), 
        email = COALESCE($7, email), 
+       registration_code = COALESCE($8, registration_code), 
        updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $8 
+       WHERE id = $9 
        RETURNING *`,
-      [name, address, city, state, country, phone, email, schoolId]
+      [name, address, city, state, country, phone, email, registration_code, schoolId]
     );
 
     if (result.rows.length === 0) {

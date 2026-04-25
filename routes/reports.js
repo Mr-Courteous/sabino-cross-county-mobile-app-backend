@@ -273,7 +273,12 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
     }
 
     // 3. BUILD THE PDF
-    const doc = new PDFDocument();
+    // Use autoFirstPage: false to prevent automatic blank pages, add pages manually only when needed
+    const doc = new PDFDocument({ autoFirstPage: false, size: 'A4' });
+    
+    // Add first page explicitly
+    doc.addPage();
+    
     const buffers = [];
 
     // Collect PDF data in buffer instead of piping to response
@@ -364,66 +369,50 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
       res.status(500).json({ success: false, error: err.message });
     });
 
-    // Header Branding with theme color background
+    // ═══════════════════════════════════════════════════════════════
+    // NEW REPORT CARD DESIGN - Clean & Modern
+    // ═══════════════════════════════════════════════════════════════
     const schoolName = pref.school_name || "School Name";
     const headerText = (pref.header_text && pref.header_text.trim()) ? pref.header_text : "";
 
-    // Colored header background
-    doc.fillColor(themeColor).rect(0, 0, 595, 75).fill();
-
-    // Left accent bar
-    doc.fillColor(themeColor).rect(0, 0, 3, 80).fill();
-
-    // White school name on colored background
-    doc.fontSize(24).fillColor('#ffffff').font('Helvetica-Bold').text(schoolName, 110, 15, { align: 'center', width: 390 });
-    doc.fontSize(11).fillColor('#f0f0f0').font('Helvetica').text(headerText, 110, 42, { align: 'center', width: 390 });
-
-    // RESET FILL COLOR - Critical to prevent color bleed
+    // Clean white header with colored bottom border
+    doc.fillColor('#ffffff').rect(0, 0, 595, 60).fill();
+    doc.fillColor(themeColor).rect(0, 55, 595, 5).fill();
+    
+    // School name on left
+    doc.fontSize(22).fillColor('#1a1a1a').font('Helvetica-Bold').text(schoolName, 50, 18);
+    doc.fontSize(9).fillColor('#666').font('Helvetica').text(headerText, 50, 42);
+    
+    // Logo on right
+    doc.fillColor('#f5f5f5').rect(500, 8, 50, 44).fill();
+    doc.strokeColor('#ddd').lineWidth(1).rect(500, 8, 50, 44).stroke();
+    await tryLoadImage(doc, pref.logo_url, 503, 12, 44, 36, 'LOGO');
+    
     doc.fillColor('#000000');
 
-    // Professional divider line with theme color
-    doc.strokeColor(themeColor).lineWidth(3).moveTo(50, 75).lineTo(550, 75).stroke();
-
-    // RESET STROKE COLOR
-    doc.strokeColor('#333333');
-
-    // Load Logo AFTER header (so it appears on top of header background)
-    console.log('\n=== Loading Images for Report ===');
-    console.log('Logo URL:', pref.logo_url ? pref.logo_url.substring(0, 100) : 'NOT PROVIDED');
-    console.log('Stamp URL:', pref.stamp_url ? pref.stamp_url.substring(0, 100) : 'NOT PROVIDED');
-    console.log('Photo URL:', pref.photo_url ? pref.photo_url.substring(0, 100) : 'NOT PROVIDED');
-    console.log('===================================\n');
-
-    // Draw white background for logo area for better visibility
-    doc.fillColor('#ffffff').rect(485, 5, 60, 60).fill();
-    await tryLoadImage(doc, pref.logo_url, 490, 10, 50, 50, 'LOGO');
-    doc.fillColor('#000000');
-
-    // Load Student Photo if available
-    await tryLoadImage(doc, pref.photo_url, 50, 80, 60, 60, 'STUDENT_PHOTO');
-
-    // Modern Student Info Card
+    // ═══════════════════════════════════════════════════════════════
+    // STUDENT INFO - New Clean Design
+    // ═══════════════════════════════════════════════════════════════
     const firstName = pref.first_name || "N/A";
     const lastName = pref.last_name || "N/A";
     const className = pref.class_name || "N/A";
     const sessionName = (pref.session_name && pref.session_name.trim()) ? pref.session_name : `Session ${sessionIdInt}`;
-
-    // Info card with theme color left border
-    doc.fillColor('#ffffff').rect(120, 80, 380, 60).fill();
-    doc.strokeColor('#e0e0e0').lineWidth(1).rect(120, 80, 380, 60).stroke();
-    // Left accent border with theme color - makes it very visible
-    doc.fillColor(themeColor).rect(120, 80, 4, 60).fill();
-
-    // RESET FILL COLOR
-    doc.fillColor('#000000');
-
-    // Student details with theme color for student name to make it unmistakable
-    doc.fontSize(14).fillColor(themeColor).font('Helvetica-Bold').text(`${firstName} ${lastName}`, 130, 87);
-    doc.fontSize(10).fillColor('#555').font('Helvetica').text(`Class: ${className}`, 130, 105);
-    doc.fontSize(10).fillColor('#666').font('Helvetica').text(`Term ${termInt}  •  ${sessionName}`, 130, 118);
-    doc.fontSize(9).fillColor('#999').font('Helvetica-Oblique').text(`Report Card`, 130, 130);
-
-    // RESET FILL COLOR
+    const admissionNo = pref.admission_number || "N/A";
+    
+    const infoY = 75;
+    
+    // Student photo box
+    doc.fillColor('#f0f0f0').rect(50, infoY, 55, 55).fill();
+    doc.strokeColor(themeColor).lineWidth(2).rect(50, infoY, 55, 55).stroke();
+    await tryLoadImage(doc, pref.photo_url, 53, infoY + 3, 49, 49, 'STUDENT_PHOTO');
+    
+    // Student details
+    doc.fontSize(15).fillColor('#1a1a1a').font('Helvetica-Bold').text(`${firstName} ${lastName}`, 115, infoY + 5);
+    doc.fontSize(10).fillColor('#555').font('Helvetica').text(`Class: ${className}`, 115, infoY + 25);
+    doc.fontSize(10).fillColor('#555').font('Helvetica').text(`Term: ${termInt}  |  ${sessionName}`, 115, infoY + 40);
+    doc.fontSize(9).fillColor(themeColor).font('Helvetica-Bold').text(`Adm No: ${admissionNo}`, 115, infoY + 54);
+    
+    // Reset
     doc.fillColor('#000000');
 
     // Deduplicate data by subject to prevent duplicate entries
@@ -436,133 +425,89 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
     });
     const deduplicatedData = Object.values(uniqueSubjects);
 
-    // Scores Table Header - with professional borders
-    const tableStartY = 160;
-    const subjectColX = 50;
-    const ca1ColX = 160;
-    const ca2ColX = 210;
-    const ca3ColX = 260;
-    const ca4ColX = 310;
-    const examColX = 360;
-    const totalColX = 410;
-    const colWidth = 45;
-    const tableWidth = 415;
-    const rowHeight = 18;
-
-    // Header background
-    doc.fillColor(themeColor).rect(subjectColX, tableStartY, tableWidth, 25).fill();
-
-    // Header borders with theme color
-    doc.strokeColor(themeColor).lineWidth(2);
-    doc.rect(subjectColX, tableStartY, tableWidth, 25).stroke();
-    // Column separators in header
-    doc.moveTo(ca1ColX, tableStartY).lineTo(ca1ColX, tableStartY + 25).stroke();
-    doc.moveTo(ca2ColX, tableStartY).lineTo(ca2ColX, tableStartY + 25).stroke();
-    doc.moveTo(ca3ColX, tableStartY).lineTo(ca3ColX, tableStartY + 25).stroke();
-    doc.moveTo(ca4ColX, tableStartY).lineTo(ca4ColX, tableStartY + 25).stroke();
-    doc.moveTo(examColX, tableStartY).lineTo(examColX, tableStartY + 25).stroke();
-    doc.moveTo(totalColX, tableStartY).lineTo(totalColX, tableStartY + 25).stroke();
-
-    // Header text
-    doc.fillColor('#ffffff').fontSize(8).font('Helvetica-Bold');
-    doc.text('Subject', subjectColX + 5, tableStartY + 6, { width: 100 });
-    doc.text('CA1', ca1ColX, tableStartY + 6, { width: colWidth, align: 'center' });
-    doc.text('CA2', ca2ColX, tableStartY + 6, { width: colWidth, align: 'center' });
-    doc.text('CA3', ca3ColX, tableStartY + 6, { width: colWidth, align: 'center' });
-    doc.text('CA4', ca4ColX, tableStartY + 6, { width: colWidth, align: 'center' });
-    doc.text('Exam', examColX, tableStartY + 6, { width: colWidth, align: 'center' });
-    doc.text('Total', totalColX, tableStartY + 6, { width: colWidth, align: 'center' });
-
-    // RESET COLORS after header
-    doc.fillColor('#000000');
-    doc.strokeColor('#333333');
-
-    // Scores Table Body
-    let tableY = tableStartY + 32;
-    doc.font('Helvetica');
-    doc.strokeColor('#ddd').lineWidth(0.5);
-
-    deduplicatedData.forEach((row, index) => {
-      // Alternating row backgrounds
-      if (index % 2 === 0) {
-        doc.fillColor('#f9f9f9').rect(subjectColX, tableY - 5, tableWidth, rowHeight).fill();
-      }
-
-      // Row bottom border
-      doc.strokeColor('#e0e0e0').lineWidth(0.5);
-      doc.moveTo(subjectColX, tableY + 13).lineTo(subjectColX + tableWidth, tableY + 13).stroke();
-
-      // Column separators
-      doc.moveTo(ca1ColX, tableY - 5).lineTo(ca1ColX, tableY + 13).stroke();
-      doc.moveTo(ca2ColX, tableY - 5).lineTo(ca2ColX, tableY + 13).stroke();
-      doc.moveTo(ca3ColX, tableY - 5).lineTo(ca3ColX, tableY + 13).stroke();
-      doc.moveTo(ca4ColX, tableY - 5).lineTo(ca4ColX, tableY + 13).stroke();
-      doc.moveTo(examColX, tableY - 5).lineTo(examColX, tableY + 13).stroke();
-      doc.moveTo(totalColX, tableY - 5).lineTo(totalColX, tableY + 13).stroke();
-
-      doc.fillColor('#1a1a1a').fontSize(8);
-
-      const subject = row.subject_name || "N/A";
-      const ca1 = (row.ca1_score !== null && row.ca1_score !== undefined) ? row.ca1_score : 0;
-      const ca2 = (row.ca2_score !== null && row.ca2_score !== undefined) ? row.ca2_score : 0;
-      const ca3 = (row.ca3_score !== null && row.ca3_score !== undefined) ? row.ca3_score : 0;
-      const ca4 = (row.ca4_score !== null && row.ca4_score !== undefined) ? row.ca4_score : 0;
-      const exam = (row.exam_score !== null && row.exam_score !== undefined) ? row.exam_score : 0;
-      const total = (row.total_score !== null && row.total_score !== undefined) ? row.total_score : 0;
-
-      doc.text(subject, subjectColX + 5, tableY, { width: 100 });
-      doc.text(ca1.toString(), ca1ColX, tableY, { width: colWidth, align: 'center' });
-      doc.text(ca2.toString(), ca2ColX, tableY, { width: colWidth, align: 'center' });
-      doc.text(ca3.toString(), ca3ColX, tableY, { width: colWidth, align: 'center' });
-      doc.text(ca4.toString(), ca4ColX, tableY, { width: colWidth, align: 'center' });
-      doc.text(exam.toString(), examColX, tableY, { width: colWidth, align: 'center' });
-      doc.text(total.toString(), totalColX, tableY, { width: colWidth, align: 'center' });
-
-      tableY += rowHeight;
+    // ═══════════════════════════════════════════════════════════════
+    // SCORES TABLE - New Clean Design
+    // ═══════════════════════════════════════════════════════════════
+    let tableY = 150;
+    const leftX = 50;
+    const tableW = 500;
+    
+    // Header
+    doc.fillColor(themeColor).rect(leftX, tableY, tableW, 20).fill();
+    doc.fillColor('#ffffff').fontSize(10).font('Helvetica-Bold');
+    doc.text('SUBJECT', leftX + 10, tableY + 5, { width: 200 });
+    doc.text('C.A.', leftX + 220, tableY + 5, { width: 60, align: 'center' });
+    doc.text('EXAM', leftX + 310, tableY + 5, { width: 60, align: 'center' });
+    doc.text('TOTAL', leftX + 410, tableY + 5, { width: 80, align: 'center' });
+    
+    tableY += 20;
+    
+    // Sort for position
+    const sorted = [...deduplicatedData].sort((a, b) => (b.total_score || 0) - (a.total_score || 0));
+    
+    // Rows
+    doc.fontSize(10);
+    deduplicatedData.forEach((row, i) => {
+      // Background
+      doc.fillColor(i % 2 === 0 ? '#fff' : '#f5f5f5').rect(leftX, tableY, tableW, 18).fill();
+      
+      const ca = Math.round(
+        Number(row.ca1_score || 0) + 
+        Number(row.ca2_score || 0) + 
+        Number(row.ca3_score || 0) + 
+        Number(row.ca4_score || 0)
+      );
+      const exam = Math.round(Number(row.exam_score || 0));
+      const total = ca + exam;
+      
+      // Text
+      doc.fillColor('#222').font('Helvetica').text(row.subject_name || '-', leftX + 10, tableY + 4, { width: 200 });
+      doc.text(String(ca), leftX + 220, tableY + 4, { width: 60, align: 'center' });
+      doc.text(String(exam), leftX + 310, tableY + 4, { width: 60, align: 'center' });
+      doc.font('Helvetica-Bold').text(String(total), leftX + 410, tableY + 4, { width: 80, align: 'center' });
+      
+      // Line
+      doc.strokeColor('#ddd').lineWidth(0.5).moveTo(leftX, tableY + 18).lineTo(leftX + tableW, tableY + 18).stroke();
+      
+      doc.fillColor('#000').font('Helvetica');
+      tableY += 18;
     });
+    
+    // Border
+    doc.strokeColor(themeColor).lineWidth(1).rect(leftX, 150, tableW, tableY - 150).stroke();
+    
+    doc.fillColor('#000');
 
-    // Table outer border with theme color
-    doc.strokeColor(themeColor).lineWidth(2);
-    doc.rect(subjectColX, tableStartY, tableWidth, tableY - tableStartY - 5).stroke();
+    // ═══════════════════════════════════════════════════════════════
+    // PRINCIPAL'S COMMENT - New Clean Design
+    // ═══════════════════════════════════════════════════════════════
+    const remarkY = tableY + 15;
+    const remarkText = (aiRemark && aiRemark.trim()) ? aiRemark : "Keep up the good work.";
+    
+    // Comment box
+    doc.fillColor('#f9f9f9').rect(50, remarkY, 500, 50).fill();
+    doc.strokeColor(themeColor).lineWidth(1).rect(50, remarkY, 500, 50).stroke();
+    
+    // Label
+    doc.fontSize(10).fillColor(themeColor).font('Helvetica-Bold').text("Principal's Comment", 60, remarkY + 5);
+    
+    // Comment text
+    doc.fontSize(9).fillColor('#444').font('Helvetica').text(remarkText, 60, remarkY + 20, { width: 420 });
+    
+    // Stamp
+    await tryLoadImage(doc, pref.stamp_url, 510, remarkY + 5, 35, 35, 'STAMP');
 
-    // RESET COLORS after table
-    doc.fillColor('#000000');
-    doc.strokeColor('#333333');
-
-    // AI Remark Section with Modern Styling
-    console.log('\n=== Remark Section ===');
-    console.log('DEBUG: Theme color being applied to remark box:', themeColor);
-    console.log('=====================================\n');
-
-    const remarkY = tableY + 20;
-    const remarkText = (aiRemark && aiRemark.trim()) ? aiRemark : "The student has demonstrated effort this term.";
-
-    // Remark box with theme color styling
-    doc.fillColor(themeColor).opacity(0.08).rect(50, remarkY, 365, 85).fill();
-    doc.fillColor(themeColor).opacity(1);
-    doc.strokeColor(themeColor).lineWidth(2).rect(50, remarkY, 365, 85).stroke();
-
-    // RESET FILL COLOR before text
-    doc.fillColor('#000000');
-
-    // Remark content
-    doc.fontSize(11).fillColor(themeColor).font('Helvetica-Bold').text("Principal's Comment", 60, remarkY + 8);
-    doc.fontSize(9).fillColor('#666').font('Helvetica').text("(AI Generated Insight)", 60, remarkY + 22);
-    doc.fontSize(10).fillColor('#1a1a1a').font('Helvetica').text(remarkText, 60, remarkY + 35, { width: 345, align: 'left' });
-
-    // School Stamp positioned on the right of the remark box
-    await tryLoadImage(doc, pref.stamp_url, 420, remarkY + 15, 35, 35, 'STAMP');
-
-    // RESET COLORS before footer
-    doc.fillColor('#000000');
-    doc.strokeColor('#333333');
-
-
-    // Modern Footer with theme color accent
-    const footerY = 730;
+    // ═══════════════════════════════════════════════════════════════
+    // FOOTER - New Clean Design
+    // ═══════════════════════════════════════════════════════════════
+    const footerY = tableY + 70;
+    
+    // Divider
     doc.strokeColor(themeColor).lineWidth(2).moveTo(50, footerY).lineTo(550, footerY).stroke();
-    doc.fontSize(8).fillColor('#999').text(`Generated on ${new Date().toLocaleString()}`, 50, footerY + 8, { align: 'center', width: 500 });
-    doc.fontSize(7).fillColor('#bbb').text('This document is automatically generated and certified by the School Management System', 50, footerY + 18, { align: 'center', width: 500 });
+    
+    // Footer text
+    doc.fontSize(8).fillColor('#888').text(`Generated: ${new Date().toLocaleDateString()}`, 50, footerY + 8, { align: 'center', width: 500 });
+    doc.fontSize(7).fillColor('#aaa').text('School Management System', 50, footerY + 20, { align: 'center', width: 500 });
 
     // Finalize PDF
     doc.end();
@@ -777,10 +722,10 @@ router.get('/data/student/:enrollmentId', async (req, res) => {
         COALESCE(s.ca3_score, 0) as ca3_score,
         COALESCE(s.ca4_score, 0) as ca4_score,
         COALESCE(s.exam_score, 0) as exam_score,
-        (COALESCE(s.ca1_score, 0) + COALESCE(s.ca2_score, 0) + COALESCE(s.ca3_score, 0) + 
+        ROUND(COALESCE(s.ca1_score, 0) + COALESCE(s.ca2_score, 0) + COALESCE(s.ca3_score, 0) + 
          COALESCE(s.ca4_score, 0) + COALESCE(s.exam_score, 0)) as student_total,
         ROUND(AVG(COALESCE(s2.ca1_score, 0) + COALESCE(s2.ca2_score, 0) + COALESCE(s2.ca3_score, 0) + 
-                  COALESCE(s2.ca4_score, 0) + COALESCE(s2.exam_score, 0))::NUMERIC, 2) as class_average
+                  COALESCE(s2.ca4_score, 0) + COALESCE(s2.exam_score, 0))::NUMERIC, 0) as class_average
       FROM scores s
       JOIN global_subjects g ON s.subject_id = g.id
       JOIN enrollments e ON s.enrollment_id = e.id
@@ -847,7 +792,13 @@ router.get('/data/class/:classId', async (req, res) => {
           st.id as student_id,
           st.first_name,
           st.last_name,
-          SUM(COALESCE(s.total_score, 0)) as aggregate_total
+          SUM(
+            COALESCE(s.ca1_score, 0) + 
+            COALESCE(s.ca2_score, 0) + 
+            COALESCE(s.ca3_score, 0) + 
+            COALESCE(s.ca4_score, 0) + 
+            COALESCE(s.exam_score, 0)
+          ) as aggregate_total
         FROM enrollments e
         JOIN students st ON e.student_id = st.id
         LEFT JOIN scores s ON s.enrollment_id = e.id 
@@ -861,8 +812,7 @@ router.get('/data/class/:classId', async (req, res) => {
       ),
       RankedStudents AS (
         SELECT 
-          *,
-          RANK() OVER (ORDER BY aggregate_total DESC) as student_rank
+          *
         FROM StudentTotals
       )
       SELECT 
@@ -873,8 +823,20 @@ router.get('/data/class/:classId', async (req, res) => {
         COALESCE(s.ca3_score, 0) as ca3_score,
         COALESCE(s.ca4_score, 0) as ca4_score,
         COALESCE(s.exam_score, 0) as exam_score,
-        COALESCE(s.total_score, 0) as subject_total,
-        ROUND(AVG(COALESCE(s2.total_score, 0)) OVER (PARTITION BY s.subject_id), 2) as subject_class_average
+        ROUND(
+          COALESCE(s.ca1_score, 0) + 
+          COALESCE(s.ca2_score, 0) + 
+          COALESCE(s.ca3_score, 0) + 
+          COALESCE(s.ca4_score, 0) + 
+          COALESCE(s.exam_score, 0)
+        ) as subject_total,
+        ROUND(AVG(
+          COALESCE(s2.ca1_score, 0) + 
+          COALESCE(s2.ca2_score, 0) + 
+          COALESCE(s2.ca3_score, 0) + 
+          COALESCE(s2.ca4_score, 0) + 
+          COALESCE(s2.exam_score, 0)
+        ) OVER (PARTITION BY s.subject_id), 2) as subject_class_average
       FROM RankedStudents r
       LEFT JOIN scores s ON s.enrollment_id = r.enrollment_id 
                          AND s.term = $3 
@@ -885,7 +847,7 @@ router.get('/data/class/:classId', async (req, res) => {
                           AND s2.term = $3 
                           AND s2.session_id = $4
                           AND s2.school_id = $2
-      ORDER BY r.student_rank ASC, g.subject_name ASC;
+      ORDER BY r.aggregate_total DESC, g.subject_name ASC;
     `;
 
     const result = await pool.query(query, [classId, schoolId, term, sessionId]);
@@ -907,9 +869,8 @@ router.get('/data/class/:classId', async (req, res) => {
         student = {
           enrollment_id: row.enrollment_id,
           name: `${row.first_name} ${row.last_name}`,
-          rank: row.student_rank,
           subjects: [],
-          grand_total: 0
+          grand_total: Math.round(row.aggregate_total || 0)
         };
         acc.push(student);
       }
@@ -1193,7 +1154,12 @@ router.get('/preview/official-report/:enrollmentId', async (req, res) => {
     }
 
     // 3. BUILD PDF - Same logic as email route but collect as base64
-    const doc = new PDFDocument();
+    // Use autoFirstPage: false to prevent automatic blank pages
+    const doc = new PDFDocument({ autoFirstPage: false, size: 'A4' });
+    
+    // Add first page explicitly
+    doc.addPage();
+    
     const buffers = [];
 
     doc.on('data', (chunk) => {
@@ -1373,7 +1339,12 @@ router.get('/preview/student-grades/:enrollmentId', async (req, res) => {
     const student = data[0];
 
     // Generate PDF
-    const doc = new PDFDocument();
+    // Use autoFirstPage: false to prevent automatic blank pages
+    const doc = new PDFDocument({ autoFirstPage: false, size: 'A4' });
+    
+    // Add first page explicitly
+    doc.addPage();
+    
     const buffers = [];
 
     doc.on('data', (chunk) => buffers.push(chunk));

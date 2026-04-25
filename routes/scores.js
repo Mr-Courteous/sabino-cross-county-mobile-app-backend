@@ -1429,6 +1429,64 @@ router.get('/analytics/subject', async (req, res) => {
   }
 });
 
+/**
+ * @route   GET /api/scores/class-curriculum
+ * @desc    Get all unique subjects that have score records (even empty ones) for a class
+ *          Used for quick navigation between subjects in a class curriculum
+ * @access  Private
+ * @query   {
+ *            classId: Number,
+ *            academicSession: String,
+ *            term: Number (1-3)
+ *          }
+ */
+router.get('/class-curriculum', async (req, res) => {
+  try {
+    const schoolId = req.user?.schoolId;
+    const { classId, academicSession, term } = req.query;
+
+    if (!classId || !academicSession || !term) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation Error',
+        error: 'classId, academicSession, and term are required'
+      });
+    }
+
+    const query = `
+      SELECT DISTINCT 
+        gs.id, 
+        gs.subject_name as name,
+        gs.category,
+        gs.education_level
+      FROM scores sc
+      JOIN global_subjects gs ON sc.subject_id = gs.id
+      JOIN enrollments e ON sc.enrollment_id = e.id
+      WHERE e.class_id = $1 
+        AND sc.academic_session = $2 
+        AND sc.term = $3 
+        AND sc.school_id = $4
+      ORDER BY gs.subject_name ASC
+    `;
+
+    const result = await pool.query(query, [classId, academicSession, term, schoolId]);
+
+    res.status(200).json({
+      success: true,
+      count: result.rowCount,
+      data: result.rows
+    });
+
+  } catch (error) {
+    console.error('Class Curriculum Fetch Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server Error',
+      error: error.message
+    });
+  }
+});
+
 // =====================================================================
 // 5. SCORE UPDATES & DELETIONS
 // =====================================================================
@@ -1576,6 +1634,172 @@ router.put('/:scoreId', async (req, res) => {
 
   } catch (error) {
     console.error('Update Score Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server Error',
+      error: error.message
+    });
+  }
+});
+
+// =====================================================================
+// BULK SUBJECT INITIALIZATION (Creates empty score records for multiple subjects)
+// =====================================================================
+
+/**
+ * @route   POST /api/scores/initialize-subjects
+ * @desc    Initialize empty score records for multiple subjects in a class
+ *          Creates empty score entries for all students in a class across selected subjects
+ * @access  Private (Authenticated Teachers)
+ * @body    {
+ *            classId: Number,
+ *            subjectIds: [Number, Number, ...],
+ *            academicSession: String (e.g., "2024/2025"),
+ *            term: Number (1, 2, or 3)
+ *          }
+ * @response {
+ *            success: true,
+ *            message: "Initialized 12 score records across 4 subjects",
+ *            recordsCreated: 12,
+ *            subjects: [{ id, name, recordsCount }, ...]
+ *          }
+ */
+router.post('/initialize-subjects', async (req, res) => {
+  try {
+    const schoolId = req.user?.schoolId;
+    const { classId, subjectIds, academicSession, term } = req.body;
+
+    // Validation
+    if (!classId || !subjectIds || !Array.isArray(subjectIds) || subjectIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation Error',
+        error: 'classId and non-empty subjectIds array are required'
+      });
+    }
+
+    if (!academicSession || !/^\d{4}\/\d{4}$/.test(academicSession)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation Error',
+        error: 'academicSession must be in format YYYY/YYYY (e.g., "2024/2025")'
+      });
+    }
+
+    if (!term || ![1, 2, 3].includes(parseInt(term))) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation Error',
+        error: 'term must be 1, 2, or 3'
+      });
+    }
+
+    // 1. Get the session ID for this session name
+    const sessionResult = await pool.query(
+      'SELECT id FROM academic_years WHERE session_name = $1 OR year_label = $1 LIMIT 1',
+      [academicSession]
+    );
+
+    if (sessionResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Session Not Found',
+        error: `Academic session "${academicSession}" not found for your school`
+      });
+    }
+    const sessionId = sessionResult.rows[0].id;
+
+    // 2. Get all enrollments for this class in this academic session
+    const enrollmentsQuery = `
+      SELECT DISTINCT e.id as enrollment_id
+      FROM enrollments e
+      WHERE e.school_id = $1 
+        AND e.class_id = $2
+        AND e.session_id = $3
+    `;
+
+    const enrollmentsResult = await pool.query(enrollmentsQuery, [schoolId, classId, sessionId]);
+    const enrollments = enrollmentsResult.rows;
+
+    if (enrollments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No Enrollments Found',
+        error: 'No enrolled students found for this class in the specified academic session'
+      });
+    }
+
+    // 3. Get subject names for response reporting
+    const subjectPlaceholders = subjectIds.map((_, i) => `$${i + 1}`).join(',');
+    const subjectsQuery = `SELECT id, subject_name FROM global_subjects WHERE id IN (${subjectPlaceholders})`;
+    const subjectsResult = await pool.query(subjectsQuery, subjectIds);
+    const subjectsMap = {};
+    subjectsResult.rows.forEach(s => {
+      subjectsMap[s.id] = s.subject_name;
+    });
+
+    // 3. Build bulk insert for all enrollment x subject combinations
+    const values = [];
+    const placeholders = [];
+    let paramIndex = 1;
+
+    const recordsToCreate = [];
+    for (const enrollment of enrollments) {
+      for (const subjectId of subjectIds) {
+        recordsToCreate.push([schoolId, enrollment.enrollment_id, subjectId, sessionId, term, req.user.id]);
+      }
+    }
+
+    recordsToCreate.forEach(record => {
+      placeholders.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, null, null, null, null, null, null, $${paramIndex + 5})`);
+      values.push(...record);
+      paramIndex += 6;
+    });
+
+    if (placeholders.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation Error',
+        error: 'No records to create'
+      });
+    }
+
+    // 4. Insert with ON CONFLICT DO NOTHING (skip if already exists)
+    const insertQuery = `
+      INSERT INTO scores (
+        school_id, enrollment_id, subject_id, session_id, term,
+        ca1_score, ca2_score, ca3_score, ca4_score, exam_score,
+        teacher_remark, updated_by
+      ) VALUES ${placeholders.join(',')}
+      ON CONFLICT (school_id, enrollment_id, subject_id, session_id, term)
+      DO NOTHING
+      RETURNING *
+    `;
+
+    const result = await pool.query(insertQuery, values);
+
+    // 5. Count created records per subject
+    const subjectCounts = {};
+    result.rows.forEach(row => {
+      subjectCounts[row.subject_id] = (subjectCounts[row.subject_id] || 0) + 1;
+    });
+
+    const subjectDetails = subjectIds.map(id => ({
+      id,
+      name: subjectsMap[id] || `Subject ${id}`,
+      recordsCount: subjectCounts[id] || 0
+    }));
+
+    res.status(201).json({
+      success: true,
+      message: `Initialized ${result.rowCount} score records across ${subjectIds.length} subject(s)`,
+      recordsCreated: result.rowCount,
+      totalEnrollments: enrollments.length,
+      subjects: subjectDetails
+    });
+
+  } catch (error) {
+    console.error('❌ Bulk Subject Initialization Error:', error);
     res.status(500).json({
       success: false,
       message: 'Server Error',
