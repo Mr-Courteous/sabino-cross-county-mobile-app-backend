@@ -17,7 +17,9 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // Email transporter
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 587,
+  secure: false, // use TLS
   auth: {
     user: 'inumiduncourteous@gmail.com',
     pass: 'vvcx njbg cwac kuao',
@@ -977,7 +979,7 @@ router.post('/bulk', authMiddleware.authenticateToken, async (req, res) => {
   } catch (error) {
     await client.query('ROLLBACK');
     console.error("❌ Bulk Processing Error:", error);
-    
+
     if (error.code === '23505') {
       return res.status(409).json({
         success: false,
@@ -1337,7 +1339,7 @@ router.put('/:studentId', authMiddleware.authenticateToken, async (req, res) => 
     });
   } catch (error) {
     console.error("Update Error:", error.message);
-    
+
     if (error.code === '23505') {
       return res.status(409).json({
         success: false,
