@@ -477,20 +477,20 @@ router.post('/bulk-upsert', async (req, res) => {
       // Validate score ranges
       const caScores = [score.ca1Score, score.ca2Score, score.ca3Score, score.ca4Score];
       for (const ca of caScores) {
-        if (ca !== null && ca !== undefined && (ca < 0 || ca > 20)) {
+        if (ca !== null && ca !== undefined && (ca < 0 || ca > 10)) {
           return res.status(400).json({
             success: false,
             message: 'Validation Error',
-            error: `CA score at index ${i} must be between 0 and 20`
+            error: `CA score at index ${i} must be between 0 and 10`
           });
         }
       }
 
-      if (score.examScore !== null && score.examScore !== undefined && (score.examScore < 0 || score.examScore > 40)) {
+      if (score.examScore !== null && score.examScore !== undefined && (score.examScore < 0 || score.examScore > 60)) {
         return res.status(400).json({
           success: false,
           message: 'Validation Error',
-          error: `Exam score at index ${i} must be between 0 and 40`
+          error: `Exam score at index ${i} must be between 0 and 60`
         });
       }
     }

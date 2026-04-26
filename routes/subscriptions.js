@@ -57,7 +57,7 @@ const verifyFlutterwaveTransaction = async (transactionId) => {
       error: null
     };
   } catch (error) {
-    console.error('❌ Flutterwave verification error:', error.response?.data || error.message);
+    console.error('❌ Flutterwave verification error:', error.message);
     return {
       success: false,
       data: null,
@@ -158,7 +158,7 @@ router.post('/webhook', async (req, res) => {
 
       // Get the plan to know the duration
       const planResult = await pool.query(
-        'SELECT duration_days FROM subscription_plans WHERE id = $1',
+        'SELECT duration_days, price FROM subscription_plans WHERE id = $1',
         [meta.plan_id]
       );
 
@@ -167,7 +167,17 @@ router.post('/webhook', async (req, res) => {
         return res.status(400).json({ error: 'Plan not found' });
       }
 
-      const planDurationDays = planResult.rows[0].duration_days;
+      const plan = planResult.rows[0];
+      const planDurationDays = plan.duration_days;
+      const expectedAmount = Number(plan.price);
+      const paidAmount = Number(payload.data.amount);
+
+      // Verify amount
+      if (paidAmount < expectedAmount) {
+        console.warn(`🚨 Webhook Revenue Fraud Alert: School ${schoolId} paid ₦${paidAmount} for ₦${expectedAmount} plan`);
+        return res.status(400).json({ error: 'Amount mismatch' });
+      }
+
       const startDate = new Date();
       const endDate = calculateEndDate(startDate, planDurationDays);
 
@@ -226,7 +236,7 @@ router.post('/verify', async (req, res) => {
   try {
     // 1. Verify plan exists and get duration
     const planResult = await pool.query(
-      'SELECT id, duration_days FROM subscription_plans WHERE id = $1',
+      'SELECT id, duration_days, price FROM subscription_plans WHERE id = $1',
       [plan_id]
     );
 
@@ -235,7 +245,9 @@ router.post('/verify', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Selected plan not found' });
     }
 
-    const { duration_days } = planResult.rows[0];
+    const plan = planResult.rows[0];
+    const { duration_days, price } = plan;
+    const expectedAmount = Number(price);
 
     // 2. Verify with Flutterwave API
     const verifyResult = await verifyFlutterwaveTransaction(transaction_id);
@@ -249,6 +261,16 @@ router.post('/verify', async (req, res) => {
     }
 
     const flwData = verifyResult.data;
+    const paidAmount = Number(flwData.amount);
+
+    // 2.5 Verify amount
+    if (paidAmount < expectedAmount) {
+      console.warn(`🚨 Revenue Fraud Alert: School ${schoolId} attempted to pay ₦${paidAmount} for ₦${expectedAmount} plan`);
+      return res.status(400).json({ 
+        success: false, 
+        message: `Payment amount mismatch. Expected ₦${expectedAmount}, received ₦${paidAmount}.` 
+      });
+    }
 
     // 3. Additional verification - ensure transaction status
     if (flwData.status !== 'successful') {

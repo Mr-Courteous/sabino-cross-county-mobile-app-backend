@@ -19,7 +19,14 @@ const pool = new Pool({
   password: process.env.DATABASE_URL ? undefined : (process.env.DB_PASSWORD || ''),
   
   // SSL configuration - Required for many cloud DBs like Supabase/Neon/Render
-  ssl: isProduction ? { rejectUnauthorized: false } : false
+  ssl: isProduction ? { rejectUnauthorized: false } : false,
+
+  // ---------------------------------------------------------
+  // POOLING CONFIGURATION (Audit Recommendation #11)
+  // ---------------------------------------------------------
+  max: 20,                // Maximum number of clients in the pool
+  idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
+  connectionTimeoutMillis: 5000, // Return an error after 5 seconds if connection cannot be established
 });
 
 console.log('\n🗄️  [DB] Attempting connection...');

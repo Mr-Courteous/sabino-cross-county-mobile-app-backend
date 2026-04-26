@@ -106,6 +106,7 @@ router.post('/initialize-from-templates', async (req, res) => {
     // STRICT SECURITY: Extract schoolId and countryId ONLY from token, never from req.body or req.query
     const schoolId = req.user?.schoolId;
     const countryId = req.user?.countryId;
+    const effectiveCountryId = (countryId === 22 ? 1 : countryId);
 
     if (!schoolId) {
       return res.status(401).json({

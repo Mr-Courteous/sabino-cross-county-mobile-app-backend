@@ -319,7 +319,7 @@ router.post('/initiate', async (req, res) => {
     );
 
     if (!flwRes.data.data || !flwRes.data.data.link) {
-      console.error('❌ Flutterwave did not return a payment link:', flwRes.data);
+      console.error('❌ Flutterwave did not return a payment link');
       return res.status(500).json({ success: false, message: 'Failed to generate payment link from Flutterwave' });
     }
 
@@ -453,6 +453,18 @@ router.post('/verify', async (req, res) => {
 
     const plan = planResult.rows[0];
     const durationDays = plan.duration_days || 30;
+    const expectedAmount = Number(plan.price);
+    const paidAmount = Number(flwData.amount);
+
+    // Step 9.5: Verify amount matches plan price
+    if (paidAmount < expectedAmount) {
+      console.warn(`🚨 Revenue Fraud Alert: School ${schoolId} attempted to pay ₦${paidAmount} for ₦${expectedAmount} plan`);
+      await savePaymentTransaction(schoolId, planIdToUse, PAYMENT_STATUS.FAILED, flwData, tx_ref);
+      return res.status(400).json({ 
+        success: false, 
+        message: `Payment amount mismatch. Expected ₦${expectedAmount}, received ₦${paidAmount}.` 
+      });
+    }
 
     // Step 9: Calculate subscription dates
     const startDate = new Date();
@@ -504,7 +516,7 @@ router.post('/verify', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('❌ Payment verification error:', err.response?.data || err.message);
+    console.error('❌ Payment verification error:', err.message);
     res.status(500).json({ 
       success: false, 
       message: 'Internal error during payment verification. Your payment is being processed. Please contact support if you do not receive confirmation within 24 hours.' 

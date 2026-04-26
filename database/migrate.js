@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS schools (
   logo_url VARCHAR(500),
   stamp_url VARCHAR(500),
   is_active BOOLEAN DEFAULT true,
+  payment_status VARCHAR(50) DEFAULT 'pending',
+  subscription_expiry TIMESTAMPTZ,
+  renewal_warning_sent_at TIMESTAMPTZ,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -225,11 +228,23 @@ CREATE TABLE IF NOT EXISTS payment_transactions (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- RevenueCat Webhook Events Table (Idempotency Audit)
+CREATE TABLE IF NOT EXISTS webhook_events (
+  id SERIAL PRIMARY KEY,
+  event_id VARCHAR(100) UNIQUE NOT NULL,
+  type VARCHAR(100) NOT NULL,
+  app_user_id VARCHAR(100) NOT NULL,
+  payload JSONB,
+  processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create indexes for payment lookup
 CREATE INDEX IF NOT EXISTS idx_payment_school_id ON payment_transactions(school_id);
 CREATE INDEX IF NOT EXISTS idx_payment_tx_ref ON payment_transactions(tx_ref);
 CREATE INDEX IF NOT EXISTS idx_payment_flutterwave_ref ON payment_transactions(flutterwave_ref);
 CREATE INDEX IF NOT EXISTS idx_payment_status ON payment_transactions(status);
+CREATE INDEX IF NOT EXISTS idx_webhook_events_event_id ON webhook_events(event_id);
+CREATE INDEX IF NOT EXISTS idx_webhook_events_app_user ON webhook_events(app_user_id);
 `;
 
 async function runMigrations() {

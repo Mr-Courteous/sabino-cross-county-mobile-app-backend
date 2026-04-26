@@ -1,14 +1,41 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../database/db');
-const bcrypt = require('bcrypt');
-const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
-// googleapis removed — purchase verification is now handled by RevenueCat webhooks
+const crypto = require('crypto');
 const authMiddleware = require('../middleware/auth');
 const { validatePassword } = require('../utils/password-validator');
+const rateLimit = require('express-rate-limit');
+const axios = require('axios');
+
 require('dotenv').config();
+
+// ---------------------------------------------------------------------------
+// Rate Limiters (Audit Recommendation #5)
+// ---------------------------------------------------------------------------
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // Limit each IP to 5 OTP requests per window
+  message: {
+    success: false,
+    error: 'Too many OTP requests. Please try again in 15 minutes.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Limit each IP to 10 login attempts per window
+  message: {
+    success: false,
+    error: 'Too many login attempts. Please try again in 15 minutes.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // ---------------------------------------------------------------------------
 // Subscription gating middleware
@@ -32,24 +59,58 @@ const checkSubscription = async (req, res, next) => {
 
     const school = result.rows[0];
 
-    if (!school || school.payment_status !== 'completed') {
+    // If no school found, fail early
+    if (!school) {
+      return res.status(404).json({ success: false, error: 'School not found.' });
+    }
+
+    const { payment_status, subscription_expiry } = school;
+    const now = new Date();
+
+    // 1. Check if status is a paid status
+    const paidStatuses = ['completed', 'grace_period'];
+    if (!paidStatuses.includes(payment_status)) {
       return res.status(402).json({
         success: false,
         error: 'Subscription required.',
-        message: 'Your school does not have an active subscription. Please complete payment to access this feature.'
+        message: 'Your school does not have an active subscription. Please subscribe via the Sabino app to access this feature.'
       });
     }
 
-    // Optional: also check if subscription has expired
-    if (school.subscription_expiry && new Date(school.subscription_expiry) < new Date()) {
+    // 2. Problem 4 Fix: Null expiry = data problem = block access
+    if (!subscription_expiry) {
+      console.warn(`🚨 [checkSubscription] Missing expiry for school ${schoolId} even though status is ${payment_status}`);
+      return res.status(402).json({
+        success: false,
+        error: 'Subscription data incomplete.',
+        message: 'Your subscription record is missing an expiry date. Please open the app and tap "Restore Purchases" to sync your account.'
+      });
+    }
+
+    // 3. Check Expiry
+    const expiryDate = new Date(subscription_expiry);
+    if (expiryDate < now) {
+      // Auto-fix status if EXPIRATION webhook was delayed
+      await pool.query(
+        "UPDATE schools SET payment_status = 'expired', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND payment_status != 'expired'",
+        [schoolId]
+      );
       return res.status(402).json({
         success: false,
         error: 'Subscription expired.',
-        message: 'Your subscription has expired. Please renew to continue.'
+        message: 'Your subscription has expired. Please renew via the Sabino app to continue accessing premium features.'
       });
     }
 
-    next();
+    // 4. All good — attach info for potential frontend use
+    req.subscription = {
+      status: payment_status,
+      expiresAt: expiryDate.toISOString(),
+      daysRemaining: Math.ceil((expiryDate.getTime() - now.getTime()) / 86400000)
+    };
+
+    return next();
+
   } catch (error) {
     console.error('[checkSubscription] Error:', error);
     return res.status(500).json({ success: false, error: 'Failed to verify subscription status.' });
@@ -60,8 +121,8 @@ const checkSubscription = async (req, res, next) => {
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: 'inumiduncourteous@gmail.com',
-    pass: 'vvcx njbg cwac kuao',
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_APP_PASSWORD,
   },
 });
 // Check account status WITHOUT sending OTP
@@ -103,7 +164,7 @@ router.get('/check-status/:email', async (req, res) => {
 
 
 // Send OTP
-router.post('/otp', async (req, res) => {
+router.post('/otp', otpLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email is required" });
@@ -131,7 +192,8 @@ router.post('/otp', async (req, res) => {
       });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = crypto.randomInt(100000, 999999).toString();
+    const otpHash = await bcrypt.hash(otp, 10);
     const expiresAt = new Date(Date.now() + 10 * 60000);
 
     await pool.query(
@@ -139,11 +201,11 @@ router.post('/otp', async (req, res) => {
        VALUES ($1, $2, $3) 
        ON CONFLICT (email) DO UPDATE 
        SET otp_code = $2, expires_at = $3, is_verified = false`,
-      [email, otp, expiresAt]
+      [email, otpHash, expiresAt]
     );
 
     const mailOptions = {
-      from: '"Sabino School" Sabinoschool1@gmail.com <',
+      from: `"Sabino School" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "Verify Your School Email",
       html: `
@@ -184,11 +246,19 @@ router.post('/verify-otp', async (req, res) => {
     }
 
     const verifyRes = await pool.query(
-      'SELECT * FROM email_verifications WHERE email = $1 AND otp_code = $2 AND expires_at > NOW()',
-      [email, otp]
+      'SELECT * FROM email_verifications WHERE email = $1 AND expires_at > NOW()',
+      [email]
     );
 
     if (verifyRes.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired verification code"
+      });
+    }
+
+    const isMatch = await bcrypt.compare(otp, verifyRes.rows[0].otp_code);
+    if (!isMatch) {
       return res.status(400).json({
         success: false,
         message: "Invalid or expired verification code"
@@ -215,7 +285,7 @@ router.post('/verify-otp', async (req, res) => {
 });
 
 // Forgot Password - Send OTP
-router.post('/forgot-password', async (req, res) => {
+router.post('/forgot-password', otpLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email is required" });
@@ -234,7 +304,8 @@ router.post('/forgot-password', async (req, res) => {
       });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = crypto.randomInt(100000, 999999).toString();
+    const otpHash = await bcrypt.hash(otp, 10);
     const expiresAt = new Date(Date.now() + 10 * 60000);
 
     await pool.query(
@@ -242,11 +313,11 @@ router.post('/forgot-password', async (req, res) => {
        VALUES ($1, $2, $3) 
        ON CONFLICT (email) DO UPDATE 
        SET otp_code = $2, expires_at = $3, is_verified = false`,
-      [email, otp, expiresAt]
+      [email, otpHash, expiresAt]
     );
 
     const mailOptions = {
-      from: '"Sabino School" <inumiduncourteous@gmail.com>',
+      from: `"Sabino School" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "School Account Password Reset",
       html: `
@@ -404,7 +475,7 @@ router.post('/', async (req, res) => {
           name: existingSchool.name,
           countryId: existingSchool.country_id
         },
-        process.env.JWT_SECRET || 'your-secret-key',
+        process.env.JWT_SECRET,
         { expiresIn: '24h' }
       );
 
@@ -503,7 +574,7 @@ router.post('/', async (req, res) => {
         name,
         countryId: resolvedCountryId
       },
-      process.env.JWT_SECRET || 'your-secret-key',
+      process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
 
@@ -548,45 +619,119 @@ router.post('/revenuecat-webhook', async (req, res) => {
 
     const { event } = req.body;
 
-    // Log the entire payload for debugging
-    console.log('[RC Webhook] Full payload:', JSON.stringify(req.body, null, 2));
 
     if (!event) {
       console.warn('[RC Webhook] No event object in payload');
       return res.status(200).send('Webhook received');
     }
 
-    const { type, app_user_id, expiration_at_ms } = event;
+    const { type, app_user_id, expiration_at_ms, id: event_id } = event;
 
     if (!app_user_id) {
       console.warn('[RC Webhook] No app_user_id in payload. Event type:', type);
       return res.status(200).send('Webhook received');
     }
 
-    console.log(`[RC Webhook] Event: ${type} for School ID: ${app_user_id}`);
+    // 1.5 Idempotency Check (Problem 2 Fix: Use event_id column, not SERIAL id)
+    const existingEvent = await pool.query('SELECT id FROM webhook_events WHERE event_id = $1', [event_id]);
+    if (existingEvent.rows.length > 0) {
+      console.log(`[RC Webhook] Event ${event_id} already processed. Skipping.`);
+      return res.status(200).send('Webhook received');
+    }
+
+    // 1.8 School Existence Check (Problem 3 Fix)
+    const schoolCheck = await pool.query(
+      'SELECT id, name, email FROM schools WHERE id = $1',
+      [app_user_id]
+    );
+
+    if (schoolCheck.rows.length === 0) {
+      console.error(`❌ [RC Webhook] CRITICAL: School ID "${app_user_id}" not found in DB.`);
+      console.error(`This likely means the Android app is NOT calling Purchases.logIn(schoolId) before purchase.`);
+      // Still return 200 to stop retries, but log it clearly
+      return res.status(200).send('School not found');
+    }
+
+    const school = schoolCheck.rows[0];
+
+    console.log(`[RC Webhook] Event: ${type} for School ID: ${app_user_id} (ID: ${event_id})`);
 
     // 2. Handle relevant events
-    if (type === 'INITIAL_PURCHASE' || type === 'RENEWAL') {
-      // Use the exact date Google provides since your plan is already 4 months
-      const exactExpiry = expiration_at_ms ? new Date(expiration_at_ms).toISOString() : null;
+    if (type === 'INITIAL_PURCHASE' || type === 'RENEWAL' || type === 'NON_RENEWING_PURCHASE') {
+      // Problem 2 Fix: Never trust null expiry for non-renewing purchases. 
+      // Default to 4 months if expiration_at_ms is missing.
+      let exactExpiry;
+      if (expiration_at_ms) {
+        exactExpiry = new Date(expiration_at_ms).toISOString();
+      } else {
+        const fourMonthsLater = new Date();
+        fourMonthsLater.setMonth(fourMonthsLater.getMonth() + 4);
+        exactExpiry = fourMonthsLater.toISOString();
+        console.log(`🕒 [RC Webhook] No expiry in payload. Defaulting to 4 months: ${exactExpiry}`);
+      }
 
       await pool.query(
         'UPDATE schools SET payment_status = $1, subscription_expiry = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
         ['completed', exactExpiry, app_user_id]
       );
-      
-      console.log(`✅ Success: School ${app_user_id} activated. Database expiry set to: ${exactExpiry}`);
+
+      console.log(`✅ [RC Webhook] ${type}: School ${app_user_id} activated until ${exactExpiry}`);
     }
-    else if (type === 'EXPIRATION' || type === 'CANCELLATION') {
+    else if (type === 'EXPIRATION') {
+      // Move to 'expired' status
       await pool.query(
         'UPDATE schools SET payment_status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
         ['expired', app_user_id]
       );
-      console.log(`⚠️ Subscription removed for School ID: ${app_user_id} (${type})`);
+
+      // Notify school about expiration
+      try {
+        if (school.email) {
+          await transporter.sendMail({
+            from: `"Sabino Academy" <${process.env.EMAIL_USER}>`,
+            to: school.email,
+            subject: 'Your Sabino Academy Subscription has Expired',
+            html: `
+              <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+                <h2 style="color: #2563EB;">Access Suspended</h2>
+                <p>Hello <strong>${school.name}</strong>,</p>
+                <p>Your premium subscription to Sabino Academy has expired. Your portal access and results generation have been temporarily suspended.</p>
+                <div style="background: #F1F5F9; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                  <p style="margin: 0;"><strong>Action Required:</strong> Log in to your dashboard to renew your access and continue managing your students.</p>
+                </div>
+                <p>If you have already renewed, please ignore this message or tap "Restore Purchases" in the app.</p>
+                <p>Best regards,<br/>Sabino Academy Team</p>
+              </div>
+            `
+          });
+          console.log(`📧 [RC Webhook] Expiration email sent to ${school.email}`);
+        }
+      } catch (emailErr) {
+        console.error('❌ [RC Webhook] Failed to send expiration email:', emailErr);
+      }
+
+      console.log(`⚠️ [RC Webhook] EXPIRATION: School ID ${app_user_id} moved to expired status`);
+    }
+    else if (type === 'GRACE_PERIOD_STARTED') {
+      // Allow access during grace period
+      await pool.query(
+        'UPDATE schools SET payment_status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        ['grace_period', app_user_id]
+      );
+      console.log(`🕒 [RC Webhook] GRACE_PERIOD: School ID ${app_user_id} entered grace period`);
+    }
+    else if (type === 'CANCELLATION' || type === 'BILLING_ISSUE') {
+      console.log(`ℹ️ [RC Webhook] ${type}: Event received for School ID ${app_user_id}`);
     }
     else {
       console.log(`[RC Webhook] Unhandled event type "${type}". Ignoring.`);
     }
+
+    // 2.5 Record processed event for idempotency (Problem 2 Fix: Use event_id column)
+    await pool.query(
+      'INSERT INTO webhook_events (event_id, type, app_user_id, payload) VALUES ($1, $2, $3, $4)',
+      [event_id, type, app_user_id, JSON.stringify(req.body)]
+    );
 
     // 3. Always respond with 200 OK
     res.status(200).send('Webhook received');
@@ -598,61 +743,70 @@ router.post('/revenuecat-webhook', async (req, res) => {
   }
 });
 
-// Verify Flutterwave Payment and Activate Account
-router.post('/:schoolId/verify-flutterwave', authMiddleware.authenticateToken, async (req, res) => {
+/**
+ * @route   POST /api/schools/sync-subscription
+ * @desc    Manual sync with RevenueCat API to ensure local DB matches RC status
+ * @access  Private (School Admin)
+ */
+router.post('/sync-subscription', authMiddleware.authenticateToken, async (req, res) => {
   try {
-    const { schoolId } = req.params;
-    const { transaction_id } = req.body;
+    const schoolId = req.user.id;
+    const RC_API_KEY = process.env.REVENUECAT_REST_API_KEY;
 
-    // 1. Security check - ensure school exists and belongs to the user
-    // In our JWT token, schoolId is stored in 'id' and 'schoolId'
-    if (parseInt(schoolId) !== req.user.id) {
-      return res.status(403).json({ error: "Unauthorized: You can only activate your own school account." });
+    if (!RC_API_KEY) {
+      console.warn('⚠️ REVENUECAT_REST_API_KEY not configured. Skipping manual sync.');
+      return res.status(503).json({ success: false, message: 'Sync service unavailable' });
     }
 
-    if (!transaction_id) {
-      return res.status(400).json({ error: "Transaction ID is required" });
-    }
+    console.log(`🔄 [RC Sync] Fetching status for School ID: ${schoolId}`);
 
-    // 2. Verify with Flutterwave API
-    const response = await fetch(`https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${process.env.FLW_SECRET_KEY}`,
-        'Content-Type': 'application/json'
+    const response = await axios.get(
+      `https://api.revenuecat.com/v1/subscribers/${schoolId}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${RC_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
       }
-    });
+    );
 
-    const data = await response.json();
+    const subscriber = response.data.subscriber;
+    const entitlements = subscriber?.entitlements || {};
 
-    // 3. Check if payment was successful and amount matches
-    if (data.status === 'success' && data.data.status === 'successful') {
+    // Problem 5 Fix: Use actual entitlement ID from env or fallback
+    const entitlementId = process.env.REVENUECAT_ENTITLEMENT_ID || 'premium';
+    const entitlement = entitlements[entitlementId] || Object.values(entitlements)[0];
 
-      // 4. Update the schools table and return subscription start
-      const result = await pool.query(
-        `UPDATE schools SET 
-         payment_status = 'completed', 
-         updated_at = CURRENT_TIMESTAMP 
-         WHERE id = $1 RETURNING *`,
-        [schoolId]
+    if (entitlement) {
+      const expiry = entitlement.expires_date;
+      const isActive = new Date(expiry) > new Date();
+
+      await pool.query(
+        'UPDATE schools SET payment_status = $1, subscription_expiry = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+        [isActive ? 'completed' : 'expired', expiry, schoolId]
       );
 
       return res.json({
         success: true,
-        message: "Payment verified, account activated!",
-        school: result.rows[0]
-      });
-    } else {
-      return res.status(400).json({
-        error: "Payment verification failed",
-        details: data.message || "Flutterwave returned an unsucessful status."
+        message: 'Subscription status synced successfully',
+        data: { isActive, expiry }
       });
     }
+
+    return res.json({
+      success: true,
+      message: 'No active entitlements found',
+      data: { isActive: false }
+    });
+
   } catch (error) {
-    console.error("Flutterwave Verify Error:", error);
-    res.status(500).json({ error: "Internal server error during verification" });
+    console.error('❌ [RC Sync] Error:', error.response?.data || error.message);
+    res.status(500).json({ success: false, message: 'Failed to sync with RevenueCat' });
   }
 });
+
+// End of Subscription Routes
+
 
 // Get user schools (requires auth)
 router.get('/', authMiddleware.authenticateToken, async (req, res) => {

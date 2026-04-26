@@ -32,23 +32,38 @@ app.use(express.json());
 // 'dev' gives you color-coded status logs and response times
 app.use(morgan('dev')); 
 
-// Custom logger for all incoming requests to help debug connectivity
+// Custom logger for all incoming requests
 app.use((req, res, next) => {
+  // Only log method and URL for security
   console.log(`📡 [${new Date().toISOString()}] ${req.method} ${req.url}`);
-  if (req.method !== 'GET' && Object.keys(req.body).length > 0) {
-    console.log('📦 Body Payload:', JSON.stringify(req.body, null, 2));
-  }
   next();
 });
 
 // Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get('/health', async (req, res) => {
+  try {
+    const pool = require('./database/db');
+    const dbCheck = await pool.query('SELECT NOW()');
+    res.json({ 
+      status: 'ok', 
+      database: 'connected',
+      timestamp: new Date().toISOString(),
+      dbTime: dbCheck.rows[0].now
+    });
+  } catch (error) {
+    console.error('❌ Health check failed:', error.message);
+    res.status(500).json({ 
+      status: 'error', 
+      database: 'disconnected',
+      error: error.message,
+      timestamp: new Date().toISOString() 
+    });
+  }
 });
 
 // Debug endpoint - Test API connectivity without auth
 app.post('/api/test-message', (req, res) => {
-  console.log('✅ [TEST] API is working! Received:', req.body);
+  console.log('✅ [TEST] API connection verified');
   res.json({ 
     success: true, 
     message: 'API connection is working properly!',

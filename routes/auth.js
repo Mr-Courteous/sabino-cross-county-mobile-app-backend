@@ -3,7 +3,22 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../database/db');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
+
+// ---------------------------------------------------------
+// Login Rate Limiter (Audit Recommendation #5)
+// ---------------------------------------------------------
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Limit each IP to 10 login attempts per window
+  message: { 
+    success: false, 
+    error: 'Too many login attempts. Please try again in 15 minutes.' 
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // Helper: Generate Token
 const generateToken = (schoolId, type, countryId = null) => {
@@ -23,7 +38,7 @@ const generateToken = (schoolId, type, countryId = null) => {
 };
 
 // Login
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
     try {
         const { email, password } = req.body;
 
@@ -86,7 +101,7 @@ router.post('/login', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Login error:', error);
+        console.error('Login error:', error.message);
         res.status(500).json({ error: 'An unexpected server error occurred' });
     }
 });

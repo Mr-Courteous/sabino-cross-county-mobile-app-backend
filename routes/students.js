@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router({ mergeParams: true });
 const pool = require('../database/db');
 const crypto = require('crypto');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const authMiddleware = require('../middleware/auth');
@@ -10,7 +10,33 @@ const checkSubscription = require('../middleware/checkSubscription');
 const { validatePassword } = require('../utils/password-validator');
 const multer = require('multer');
 const { put } = require('@vercel/blob');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
+
+// ---------------------------------------------------------
+// Rate Limiters (Audit Recommendation #5)
+// ---------------------------------------------------------
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // Limit each IP to 5 OTP requests per window
+  message: { 
+    success: false, 
+    error: 'Too many OTP requests. Please try again in 15 minutes.' 
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Limit each IP to 10 login attempts per window
+  message: { 
+    success: false, 
+    error: 'Too many login attempts. Please try again in 15 minutes.' 
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // Configure multer for memory storage
 const upload = multer({ storage: multer.memoryStorage() });
@@ -21,8 +47,8 @@ const transporter = nodemailer.createTransport({
   port: 587,
   secure: false, // use TLS
   auth: {
-    user: 'inumiduncourteous@gmail.com',
-    pass: 'vvcx njbg cwac kuao',
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_APP_PASSWORD,
   },
 });
 
@@ -47,7 +73,7 @@ const transporter = nodemailer.createTransport({
 // =====================================================================
 
 // Send OTP
-router.post('/otp', async (req, res) => {
+router.post('/otp', otpLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email is required" });
@@ -66,7 +92,8 @@ router.post('/otp', async (req, res) => {
       });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = crypto.randomInt(100000, 999999).toString();
+    const otpHash = await bcrypt.hash(otp, 10);
     const expiresAt = new Date(Date.now() + 10 * 60000);
 
     await pool.query(
@@ -74,11 +101,11 @@ router.post('/otp', async (req, res) => {
        VALUES ($1, $2, $3) 
        ON CONFLICT (email) DO UPDATE 
        SET otp_code = $2, expires_at = $3, is_verified = false`,
-      [email, otp, expiresAt]
+      [email, otpHash, expiresAt]
     );
 
     const mailOptions = {
-      from: '"Student Registry" <inumiduncourteous@gmail.com>',
+      from: `"Student Registry" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "Verify Your Student Email",
       html: `
@@ -99,7 +126,7 @@ router.post('/otp', async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Email/DB Error:", error);
+    console.error("Email/DB Error:", error.message);
     res.status(500).json({ error: "Failed to process request" });
   }
 });
@@ -117,11 +144,19 @@ router.post('/verify-otp', async (req, res) => {
     }
 
     const verifyRes = await pool.query(
-      'SELECT * FROM email_verifications WHERE email = $1 AND otp_code = $2 AND expires_at > NOW()',
-      [email, otp]
+      'SELECT * FROM email_verifications WHERE email = $1 AND expires_at > NOW()',
+      [email]
     );
 
     if (verifyRes.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired verification code"
+      });
+    }
+
+    const isMatch = await bcrypt.compare(otp, verifyRes.rows[0].otp_code);
+    if (!isMatch) {
       return res.status(400).json({
         success: false,
         message: "Invalid or expired verification code"
@@ -139,7 +174,7 @@ router.post('/verify-otp', async (req, res) => {
     });
 
   } catch (error) {
-    console.error("OTP Verification Error:", error);
+    console.error("OTP Verification Error:", error.message);
     return res.status(500).json({
       success: false,
       message: "Failed to verify OTP. Please try again later."
@@ -148,7 +183,7 @@ router.post('/verify-otp', async (req, res) => {
 });
 
 // Forgot Password - Send OTP
-router.post('/forgot-password', async (req, res) => {
+router.post('/forgot-password', otpLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email is required" });
@@ -167,7 +202,8 @@ router.post('/forgot-password', async (req, res) => {
       });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = crypto.randomInt(100000, 999999).toString();
+    const otpHash = await bcrypt.hash(otp, 10);
     const expiresAt = new Date(Date.now() + 10 * 60000);
 
     await pool.query(
@@ -175,11 +211,11 @@ router.post('/forgot-password', async (req, res) => {
        VALUES ($1, $2, $3) 
        ON CONFLICT (email) DO UPDATE 
        SET otp_code = $2, expires_at = $3, is_verified = false`,
-      [email, otp, expiresAt]
+      [email, otpHash, expiresAt]
     );
 
     const mailOptions = {
-      from: '"Student Registry" <inumiduncourteous@gmail.com>',
+      from: `"Student Registry" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "Password Reset Code",
       html: `
@@ -200,7 +236,7 @@ router.post('/forgot-password', async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Forgot Password Error:", error);
+    console.error("Forgot Password Error:", error.message);
     res.status(500).json({ error: "Failed to process request" });
   }
 });
@@ -271,7 +307,7 @@ router.post('/reset-password', async (req, res) => {
 
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('Reset Password Error:', error);
+    console.error('Reset Password Error:', error.message);
     res.status(500).json({
       success: false,
       error: error.message
@@ -402,7 +438,7 @@ router.post('/register', async (req, res) => {
         schoolId: student.school_id,
         type: 'student'
       },
-      process.env.JWT_SECRET || 'your-secret-key',
+      process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
 
@@ -417,7 +453,7 @@ router.post('/register', async (req, res) => {
 
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('Student Registration Error:', error);
+    console.error('Student Registration Error:', error.message);
 
     if (error.code === '23505') {
       return res.status(409).json({
@@ -444,7 +480,7 @@ router.post('/register', async (req, res) => {
  *            password: String (required)
  *          }
  */
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -522,7 +558,7 @@ router.post('/login', async (req, res) => {
         countryId: resolvedCountryId,
         type: 'student'
       },
-      process.env.JWT_SECRET || 'your-secret-key',
+      process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
 
@@ -542,7 +578,7 @@ router.post('/login', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Student Login Error:', error);
+    console.error('Student Login Error:', error.message);
     res.status(500).json({
       success: false,
       error: error.message
@@ -680,9 +716,8 @@ router.put('/profile', authMiddleware.authenticateToken, upload.single('photo'),
       gender, currentPassword, newPassword
     } = req.body;
 
-    // Debugging logs
+    // Sanitized logging
     console.log('👤 Profile Update Request - Student:', studentId);
-    console.log('📦 Body:', { ...req.body, photo: req.body.photo ? '[REDACTED]' : null });
     console.log('📁 File:', req.file ? { name: req.file.originalname, size: req.file.size } : 'No file');
 
     let photo = null; // Default to null so COALESCE keeps old value if no update provided
@@ -1846,7 +1881,7 @@ router.post('/email/template', authMiddleware.authenticateToken, async (req, res
     const csvContent = "firstName,lastName,email,phone,dateOfBirth,classId,studentNumber,gender\nJohn,Doe,john@example.com,1234567890,2005-08-16,1,STU-001,Male";
 
     const mailOptions = {
-      from: '"Sabino Registry" <inumiduncourteous@gmail.com>',
+      from: `"Sabino Registry" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "📋 Student Bulk Enrollment Template",
       html: `

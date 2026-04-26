@@ -13,8 +13,8 @@ const nodemailer = require('nodemailer');
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: 'inumiduncourteous@gmail.com',
-    pass: 'vvcx njbg cwac kuao', // Note: This should ideally be in .env for production
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_APP_PASSWORD,
   },
 });
 
@@ -122,7 +122,7 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
     // 1. FETCH EVERYTHING
     // Includes CA1-4, exam score, and session name
     const dataQuery = `
-      SELECT Tap to change photo
+      SELECT 
 
         s.first_name, 
         s.last_name, 
@@ -299,7 +299,7 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
 
         // Send email with PDF attachment
         const mailOptions = {
-          from: '"School Management System" <inumiduncourteous@gmail.com>',
+          from: `"School Management System" <${process.env.EMAIL_USER}>`,
           to: email,
           subject: `Official Report Card - ${studentName}`,
           html: `
