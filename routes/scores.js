@@ -95,6 +95,7 @@ router.get('/sheet', async (req, res) => {
         s.id as student_id,
         s.first_name,
         s.last_name,
+        s.registration_number,
         e.id as enrollment_id,
         sc.id as score_id,
         COALESCE(sc.ca1_score, NULL) as ca1_score,

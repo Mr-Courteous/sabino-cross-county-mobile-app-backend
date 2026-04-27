@@ -339,7 +339,7 @@ router.post('/register', async (req, res) => {
   try {
     const {
       firstName, lastName, email, password,
-      registrationNumber, phone, dateOfBirth, gender, registrationCode
+      registrationNumber, phone, dateOfBirth, gender, registrationCode, address
     } = req.body;
 
     // Validation
@@ -418,10 +418,10 @@ router.post('/register', async (req, res) => {
     const studentResult = await client.query(
       `INSERT INTO students (
         school_id, first_name, last_name, email, password_hash,
-        registration_number, phone, date_of_birth, gender
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      RETURNING id, school_id, first_name, last_name, email, registration_number, phone, date_of_birth, gender, created_at`,
-      [schoolId, firstName, lastName, email, passwordHash, finalRegNumber, phone || null, dateOfBirth || null, gender || null]
+        registration_number, phone, date_of_birth, gender, address
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING id, school_id, first_name, last_name, email, registration_number, phone, date_of_birth, gender, address, created_at`,
+      [schoolId, firstName, lastName, email, passwordHash, finalRegNumber, phone || null, dateOfBirth || null, gender || null, address || null]
     );
 
     // Clean up verification record
@@ -496,10 +496,12 @@ router.post('/login', loginLimiter, async (req, res) => {
       `SELECT 
         s.id, s.school_id, s.first_name, s.last_name, s.email, 
         s.registration_number, s.password_hash, s.phone, s.date_of_birth, 
-        s.gender, s.photo,
+        s.gender, s.photo, s.address,
         sc.name as school_name,
         sc.country_id as school_country_id,
-        sc.country as school_country_name
+        sc.country as school_country_name,
+        sc.phone as school_phone,
+        sc.email as school_email
       FROM students s
       JOIN schools sc ON s.school_id = sc.id
       WHERE s.email = $1`,
@@ -713,7 +715,7 @@ router.put('/profile', authMiddleware.authenticateToken, upload.single('photo'),
     const studentId = req.user?.studentId;
     let {
       firstName, lastName, email, phone, dateOfBirth,
-      gender, currentPassword, newPassword
+      gender, address, currentPassword, newPassword
     } = req.body;
 
     // Sanitized logging
@@ -839,10 +841,11 @@ router.put('/profile', authMiddleware.authenticateToken, upload.single('photo'),
        date_of_birth = COALESCE($5, date_of_birth),
        gender = COALESCE($6, gender),
        photo = COALESCE($7, photo),
+       address = COALESCE($8, address),
        updated_at = CURRENT_TIMESTAMP
-       WHERE id = $8
-       RETURNING id, school_id, first_name, last_name, email, registration_number, phone, date_of_birth, gender, photo, updated_at`,
-      [firstName, lastName, email, phone, dateOfBirth, gender, photo, studentId]
+       WHERE id = $9
+       RETURNING id, school_id, first_name, last_name, email, registration_number, phone, date_of_birth, gender, photo, address, updated_at`,
+      [firstName, lastName, email, phone, dateOfBirth, gender, photo, address, studentId]
     );
 
     if (result.rows.length === 0) {
@@ -1243,28 +1246,32 @@ router.get('/', authMiddleware.authenticateToken, async (req, res) => {
     }
 
     // This query selects ALL students belonging to the school.
-    // It LEFT JOINs enrollments so that even students NOT YET enrolled still show up.
+    // It uses a subquery with DISTINCT ON to ensure each student appears only once,
+    // picking their most recent enrollment information if they have multiple.
     const query = `
-      SELECT 
-        s.id,
-        s.first_name,
-        s.last_name,
-        s.date_of_birth,
-        s.registration_number,
-        s.gender,
-        s.email,
-        s.phone,
-        e.id as enrollment_id,
-        e.status as enrollment_status,
-        e.class_id,
-        gct.display_name as class_name,
-        ay.year_label as academic_session
-      FROM students s
-      LEFT JOIN enrollments e ON s.id = e.student_id AND e.school_id = s.school_id
-      LEFT JOIN global_class_templates gct ON e.class_id = gct.id
-      LEFT JOIN academic_years ay ON e.session_id = ay.id
-      WHERE s.school_id = $1
-      ORDER BY s.last_name ASC, s.first_name ASC
+      SELECT * FROM (
+        SELECT DISTINCT ON (s.id)
+          s.id,
+          s.first_name,
+          s.last_name,
+          s.date_of_birth,
+          s.registration_number,
+          s.gender,
+          s.email,
+          s.phone,
+          e.id as enrollment_id,
+          e.status as enrollment_status,
+          e.class_id,
+          gct.display_name as class_name,
+          ay.year_label as academic_session
+        FROM students s
+        LEFT JOIN enrollments e ON s.id = e.student_id AND e.school_id = s.school_id
+        LEFT JOIN global_class_templates gct ON e.class_id = gct.id
+        LEFT JOIN academic_years ay ON e.session_id = ay.id
+        WHERE s.school_id = $1
+        ORDER BY s.id, ay.year_label DESC NULLS LAST
+      ) AS unique_students
+      ORDER BY last_name ASC, first_name ASC
     `;
 
     const result = await pool.query(query, [schoolId]);

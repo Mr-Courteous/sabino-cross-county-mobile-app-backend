@@ -27,22 +27,22 @@ const openai = new OpenAI({
 // Helper function to safely load image from various sources (file path, base64, or URL)
 async function tryLoadImage(doc, imageSource, x, y, width, height, imageType = '') {
   if (!imageSource || typeof imageSource !== 'string' || !imageSource.trim()) {
-    console.log(`[${imageType}] No image source provided`);
+    // console.log(`[${imageType}] No image source provided`);
     return false;
   }
 
   const trimmedSource = imageSource.trim();
-  console.log(`[${imageType}] Attempting to load image: ${trimmedSource.substring(0, 100)}...`);
+  // console.log(`[${imageType}] Attempting to load image: ${trimmedSource.substring(0, 100)}...`);
 
   try {
     // Check if it's a base64 encoded image
     if (trimmedSource.startsWith('data:image/')) {
-      console.log(`[${imageType}] Loading base64 image`);
+      // console.log(`[${imageType}] Loading base64 image`);
       const base64Data = trimmedSource.split(',')[1];
       if (base64Data) {
         const buffer = Buffer.from(base64Data, 'base64');
         doc.image(buffer, x, y, { width, height });
-        console.log(`[${imageType}] Base64 image loaded successfully`);
+        // console.log(`[${imageType}] Base64 image loaded successfully`);
         return true;
       }
     }
@@ -50,7 +50,7 @@ async function tryLoadImage(doc, imageSource, x, y, width, height, imageType = '
     // Check if it's a URL (http/https)
     if (trimmedSource.startsWith('http://') || trimmedSource.startsWith('https://')) {
       try {
-        console.log(`[${imageType}] Downloading image from URL: ${trimmedSource}`);
+        // console.log(`[${imageType}] Downloading image from URL: ${trimmedSource}`);
         const response = await axios.get(trimmedSource, {
           responseType: 'arraybuffer',
           timeout: 5000 // 5 second timeout
@@ -58,7 +58,7 @@ async function tryLoadImage(doc, imageSource, x, y, width, height, imageType = '
 
         const buffer = Buffer.from(response.data, 'binary');
         doc.image(buffer, x, y, { width, height });
-        console.log(`[${imageType}] URL image downloaded and loaded successfully`);
+        // console.log(`[${imageType}] URL image downloaded and loaded successfully`);
         return true;
       } catch (urlErr) {
         console.error(`[${imageType}] Failed to download image from URL:`, urlErr.message);
@@ -67,19 +67,19 @@ async function tryLoadImage(doc, imageSource, x, y, width, height, imageType = '
       // It's a file path
       const filePath = path.resolve(trimmedSource);
       if (fs.existsSync(filePath)) {
-        console.log(`[${imageType}] Loading from file path: ${filePath}`);
+        // console.log(`[${imageType}] Loading from file path: ${filePath}`);
         doc.image(filePath, x, y, { width, height });
-        console.log(`[${imageType}] File image loaded successfully`);
+        // console.log(`[${imageType}] File image loaded successfully`);
         return true;
       } else {
-        console.warn(`[${imageType}] File does not exist: ${filePath}`);
+        // console.warn(`[${imageType}] File does not exist: ${filePath}`);
       }
     }
   } catch (err) {
     console.error(`[${imageType}] Error loading image:`, err.message);
   }
 
-  console.log(`[${imageType}] Image not available`);
+  // console.log(`[${imageType}] Image not available`);
   return false;
 }
 
@@ -117,7 +117,7 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
       return res.status(400).json({ success: false, error: "Valid email address is required" });
     }
 
-    console.log(`Emailing report for enrollment: ${enrollmentId}, term: ${termInt}, session: ${sessionIdInt}, school: ${schoolId}, email: ${email}`);
+    // console.log(`Emailing report for enrollment: ${enrollmentId}, term: ${termInt}, session: ${sessionIdInt}, school: ${schoolId}, email: ${email}`);
 
     // 1. FETCH EVERYTHING
     // Includes CA1-4, exam score, and session name
@@ -176,7 +176,7 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
 
     const result = await pool.query(dataQuery, [enrollmentId, schoolId, termInt, sessionIdInt]);
 
-    console.log(`Query returned ${result.rows.length} rows`);
+    // console.log(`Query returned ${result.rows.length} rows`);
 
     // DEBUGGING: If this returns 0, it means one of the JOINs (like classes or subjects) failed to find a match
     if (result.rows.length === 0) {
@@ -207,12 +207,14 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
     const pref = data[0];
 
     // Log what we got from the database
+    /*
     console.log('\n=== Data Retrieved from Database ===');
     console.log('First row photo_url:', pref.photo_url);
     console.log('First row logo_url:', pref.logo_url);
     console.log('First row stamp_url:', pref.stamp_url);
     console.log('Total rows returned:', data.length);
     console.log('====================================\n');
+    */
 
     // 2. RETRIEVE OR GENERATE UNIQUE AI REMARK
     let aiRemark = "The student continues to show steady progress in their academic pursuits.";
@@ -266,7 +268,7 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
            ON CONFLICT (enrollment_id, term, session_id) DO UPDATE SET ai_remark = EXCLUDED.ai_remark`,
           [enrollmentId, termInt, sessionIdInt, aiRemark]
         );
-        console.log(`✓ New AI remark saved to database.`);
+        // console.log(`✓ New AI remark saved to database.`);
       }
     } catch (err) {
       console.error("AI Remark/Cache Error:", err.message);
@@ -322,7 +324,7 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
 
         await transporter.sendMail(mailOptions);
 
-        console.log(`✓ Report emailed successfully to ${email}`);
+        // console.log(`✓ Report emailed successfully to ${email}`);
         res.json({
           success: true,
           message: `Report card has been sent to ${email}`,
@@ -330,7 +332,7 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
         });
 
       } catch (emailError) {
-        console.error("Email sending failed:", emailError);
+        console.error("Email sending failed:", emailError.message);
         res.status(500).json({
           success: false,
           error: "PDF generated successfully but email sending failed",
@@ -339,7 +341,8 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
       }
     });
 
-    // STRICT VARIABLE ASSIGNMENT - Extract and validate theme color
+    // DEBUGGING: Extract and validate theme color
+    /*
     console.log('\n=== DEBUG: Database Values ===');
     console.log('DEBUG: Value from DB row pref.theme_color:', pref.theme_color);
     console.log('DEBUG: Type of pref.theme_color:', typeof pref.theme_color);
@@ -348,24 +351,25 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
       console.log('DEBUG: After trim():', pref.theme_color.trim());
       console.log('DEBUG: After trim() length:', pref.theme_color.trim().length);
     }
+    */
 
     // Only use fallback if theme_color is null, undefined, or empty after trim
     let themeColor;
     if (pref.theme_color && typeof pref.theme_color === 'string' && pref.theme_color.trim().length > 0) {
       themeColor = pref.theme_color.trim();
-      console.log('DEBUG: Using theme color from database:', themeColor);
+      // console.log('DEBUG: Using theme color from database:', themeColor);
     } else {
       themeColor = '#2196F3';
-      console.log('DEBUG: Using fallback theme color:', themeColor);
+      // console.log('DEBUG: Using fallback theme color:', themeColor);
     }
 
-    console.log('\n=== Applied Theme Color ===');
-    console.log('FINAL Applied theme color:', themeColor);
-    console.log('================================\n');
+    // console.log('\n=== Applied Theme Color ===');
+    // console.log('FINAL Applied theme color:', themeColor);
+    // console.log('================================\n');
 
     // Handle errors from PDF generation
     doc.on('error', (err) => {
-      console.error("PDF Generation Error:", err);
+      console.error("PDF Generation Error:", err.message);
       doc.destroy();
       res.status(500).json({ success: false, error: err.message });
     });
@@ -514,7 +518,7 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
     doc.end();
 
   } catch (error) {
-    console.error("PDF Generation Error:", error);
+    console.error("PDF Generation Error:", error.message);
     if (!res.writableEnded) {
       res.status(500).json({ success: false, error: error.message });
     }
@@ -545,7 +549,7 @@ router.get('/search/students', async (req, res) => {
       });
     }
 
-    // Get students with their enrollments
+    // Get students with their enrollments and session names
     const studentQuery = `
       SELECT DISTINCT 
         e.id as enrollment_id, 
@@ -553,10 +557,12 @@ router.get('/search/students', async (req, res) => {
         s.first_name, 
         s.last_name, 
         g.display_name as class_name,
-        e.session_id
+        e.session_id,
+        ay.year_label as session_name
       FROM students s
       JOIN enrollments e ON e.student_id = s.id
       JOIN global_class_templates g ON e.class_id = g.id
+      JOIN academic_years ay ON e.session_id = ay.id
       WHERE s.school_id = $1 
         AND (s.first_name ILIKE $2 OR s.last_name ILIKE $2)
         AND e.status = 'active'
@@ -628,7 +634,7 @@ router.get('/search/students', async (req, res) => {
       count: studentsWithScores.length
     });
   } catch (error) {
-    console.error('❌ Student Search Error:', error);
+    console.error('❌ Student Search Error:', error.message);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -669,7 +675,7 @@ router.get('/list/classes', async (req, res) => {
       count: result.rows.length
     });
   } catch (error) {
-    console.error('❌ Class List Error:', error);
+    console.error('❌ Class List Error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -755,7 +761,7 @@ router.get('/data/student/:enrollmentId', async (req, res) => {
 
     res.json({ success: true, data: result.rows });
   } catch (error) {
-    console.error('❌ Student Report Error:', error);
+    console.error('❌ Student Report Error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -902,7 +908,7 @@ router.get('/data/class/:classId', async (req, res) => {
       message: `Retrieved data for ${grouped.length} student(s) in class`
     });
   } catch (error) {
-    console.error('❌ Class Report Error:', error);
+    console.error('❌ Class Report Error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -1000,7 +1006,7 @@ router.post('/regenerate-remark/:enrollmentId', authMiddleware.authenticateToken
     });
 
   } catch (error) {
-    console.error('❌ Remark Regeneration Error:', error);
+    console.error('❌ Remark Regeneration Error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -1057,7 +1063,7 @@ router.delete('/remark/:enrollmentId', authMiddleware.authenticateToken, async (
     });
 
   } catch (error) {
-    console.error('❌ Remark Regeneration Error:', error);
+    console.error('❌ Remark Regeneration Error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -1151,7 +1157,7 @@ router.get('/preview/official-report/:enrollmentId', async (req, res) => {
         aiRemark = existingRemark.rows[0].ai_remark;
       }
     } catch (err) {
-      console.error("AI Remark retrieval error:", err.message);
+      // console.error("AI Remark retrieval error:", err.message);
     }
 
     // 3. BUILD PDF - Same logic as email route but collect as base64
@@ -1178,7 +1184,7 @@ router.get('/preview/official-report/:enrollmentId', async (req, res) => {
           fileName: `Report_${pref.first_name}_${pref.last_name}_Term${termInt}.pdf`.replace(/\s+/g, '_')
         });
       } catch (err) {
-        console.error("PDF preview generation error:", err);
+        console.error("PDF preview generation error:", err.message);
         res.status(500).json({ success: false, error: "Failed to generate PDF" });
       }
     });
@@ -1273,7 +1279,7 @@ router.get('/preview/official-report/:enrollmentId', async (req, res) => {
     doc.end();
 
   } catch (error) {
-    console.error('❌ PDF Preview Error:', error);
+    console.error('❌ PDF Preview Error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -1418,7 +1424,7 @@ router.get('/preview/student-grades/:enrollmentId', async (req, res) => {
     doc.end();
 
   } catch (error) {
-    console.error('❌ Student Grades Preview Error:', error);
+    console.error('❌ Student Grades Preview Error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
