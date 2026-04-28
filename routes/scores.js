@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router({ mergeParams: true });
 const pool = require('../database/db');
 const authMiddleware = require('../middleware/auth');
+const checkSubscription = require('../middleware/checkSubscription');
 
 // Apply authentication middleware to all score routes
 router.use(authMiddleware.authenticateToken);
@@ -58,7 +59,7 @@ router.use(authMiddleware.authenticateToken);
  *            termId: Number (required - 1, 2, or 3)
  *          }
  */
-router.get('/sheet', async (req, res) => {
+router.get('/sheet', authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     // STRICT SECURITY: Extract schoolId ONLY from token, never from req.body or req.query
     const schoolId = req.user?.schoolId;
@@ -187,7 +188,7 @@ router.get('/sheet', async (req, res) => {
  *            ]
  *          }
  */
-router.post('/record', async (req, res) => {
+router.post('/record', authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   const client = await pool.connect();
 
   try {
@@ -435,7 +436,7 @@ router.post('/record', async (req, res) => {
  *            ]
  *          }
  */
-router.post('/bulk-upsert', async (req, res) => {
+router.post('/bulk-upsert', authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { scores } = req.body;
@@ -572,7 +573,7 @@ router.post('/bulk-upsert', async (req, res) => {
  *            term: Number (required, 1-3)
  *          }
  */
-router.get('/class-sheet', async (req, res) => {
+router.get('/class-sheet', authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const classId = parseInt(req.query.classId);
@@ -650,7 +651,7 @@ router.get('/class-sheet', async (req, res) => {
  *            academicSession: String (optional, filter by specific session)
  *          }
  */
-router.get('/student/:studentId', async (req, res) => {
+router.get('/student/:studentId', authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { studentId } = req.params;
@@ -730,7 +731,7 @@ router.get('/student/:studentId', async (req, res) => {
  *            term: Number (required, 1-3)
  *          }
  */
-router.get('/term-summary', async (req, res) => {
+router.get('/term-summary', authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { classId, academicSession, term } = req.query;
@@ -796,7 +797,7 @@ router.get('/term-summary', async (req, res) => {
  *            sessionId: Number (required)
  *          }
  */
-router.get('/my-grades', async (req, res) => {
+router.get('/my-grades', authMiddleware.requireStudent, checkSubscription, async (req, res) => {
   try {
     if (req.user?.type !== 'student') {
       return res.status(403).json({

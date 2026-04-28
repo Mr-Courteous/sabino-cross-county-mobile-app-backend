@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../database/db');
 const authMiddleware = require('../middleware/auth');
+const checkSubscription = require('../middleware/checkSubscription');
 const PDFDocument = require('pdfkit');
 const OpenAI = require("openai"); // Assuming you use OpenAI for the AI report
 const fs = require('fs');
@@ -99,7 +100,7 @@ function calculateGrade(score) {
 
 
 
-router.post('/email/official-report/:enrollmentId', async (req, res) => {
+router.post('/email/official-report/:enrollmentId', checkSubscription, async (req, res) => {
   try {
     const { enrollmentId } = req.params;
     const { term, sessionId, email } = req.body;
@@ -529,7 +530,7 @@ router.post('/email/official-report/:enrollmentId', async (req, res) => {
  * Uses schoolId from token to filter students.
  * Used for picking a single student to generate a report.
  */
-router.get('/search/students', async (req, res) => {
+router.get('/search/students', authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const { name } = req.query;
     // STRICT SECURITY: Extract schoolId ONLY from token, never from req.body or req.query
@@ -648,7 +649,7 @@ router.get('/search/students', async (req, res) => {
  * Uses countryId from token to show allowed class templates.
  * Retrieves all available classes for the user's country.
  */
-router.get('/list/classes', async (req, res) => {
+router.get('/list/classes', authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     // STRICT SECURITY: Extract countryId ONLY from token, never from req.body or req.query
     const countryId = req.user?.countryId;
@@ -685,7 +686,7 @@ router.get('/list/classes', async (req, res) => {
  * Includes class average for each subject using window functions
  * for comparative analysis across the class
  */
-router.get('/data/student/:enrollmentId', async (req, res) => {
+router.get('/data/student/:enrollmentId', checkSubscription, async (req, res) => {
   try {
     const { enrollmentId } = req.params;
     const { term, sessionId } = req.query;
@@ -771,7 +772,7 @@ router.get('/data/student/:enrollmentId', async (req, res) => {
  * Includes student ranking by total scores using RANK() window function
  * Adds subject-level averages for class comparison
  */
-router.get('/data/class/:classId', async (req, res) => {
+router.get('/data/class/:classId', authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const { classId } = req.params;
     const { term, sessionId } = req.query;

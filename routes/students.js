@@ -611,7 +611,7 @@ router.post('/login', loginLimiter, async (req, res) => {
  * @desc    Get logged-in student's enrollment history
  * @access  Private (Student) - Requires Active Subscription
  */
-router.get('/me/enrollments', authMiddleware.authenticateToken, async (req, res) => {
+router.get('/me/enrollments', authMiddleware.authenticateToken, authMiddleware.requireStudent, checkSubscription, async (req, res) => {
   try {
     if (req.user?.type !== 'student') {
       return res.status(403).json({ success: false, error: 'This endpoint is for students only' });
@@ -655,7 +655,7 @@ router.get('/me/enrollments', authMiddleware.authenticateToken, async (req, res)
  * @desc    Get details for a specific session enrollment
  * @access  Private (Student) - Requires Active Subscription
  */
-router.get('/me/enrollments/:sessionId', authMiddleware.authenticateToken, async (req, res) => {
+router.get('/me/enrollments/:sessionId', authMiddleware.authenticateToken, authMiddleware.requireStudent, checkSubscription, async (req, res) => {
   try {
     if (req.user?.type !== 'student') {
       return res.status(403).json({ success: false, error: 'This endpoint is for students only' });
@@ -700,7 +700,7 @@ router.get('/me/enrollments/:sessionId', authMiddleware.authenticateToken, async
  * @desc    Update student's own profile (includes photo upload)
  * @access  Private (Student only)
  */
-router.put('/profile', authMiddleware.authenticateToken, upload.single('photo'), async (req, res) => {
+router.put('/profile', authMiddleware.authenticateToken, authMiddleware.requireStudent, upload.single('photo'), async (req, res) => {
   const client = await pool.connect();
 
   try {
@@ -908,7 +908,7 @@ router.put('/profile', authMiddleware.authenticateToken, upload.single('photo'),
  *            academicSession: String (required, e.g., "2023/2024")
  *          }
  */
-router.post('/bulk', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/bulk', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   const client = await pool.connect();
 
   try {
@@ -1048,7 +1048,7 @@ router.post('/bulk', authMiddleware.authenticateToken, async (req, res) => {
  */
 
 
-router.post('/', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   const client = await pool.connect();
 
   try {
@@ -1237,7 +1237,7 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
  * @desc    Get all students registered to the authenticated school
  * @access  Private
  */
-router.get('/', authMiddleware.authenticateToken, async (req, res) => {
+router.get('/', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
 
@@ -1296,7 +1296,7 @@ router.get('/', authMiddleware.authenticateToken, async (req, res) => {
  * @desc    Fetch a specific student's details with enrollment history
  * @access  Private
  */
-router.get('/:studentId', authMiddleware.authenticateToken, async (req, res) => {
+router.get('/:studentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { studentId } = req.params;
@@ -1344,7 +1344,7 @@ router.get('/:studentId', authMiddleware.authenticateToken, async (req, res) => 
  * @desc    Update student details
  * @access  Private
  */
-router.put('/:studentId', authMiddleware.authenticateToken, async (req, res) => {
+router.put('/:studentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { studentId } = req.params;
@@ -1399,7 +1399,7 @@ router.put('/:studentId', authMiddleware.authenticateToken, async (req, res) => 
  * @desc    Remove a student record (cascades to enrollments & scores)
  * @access  Private
  */
-router.delete('/:studentId', authMiddleware.authenticateToken, async (req, res) => {
+router.delete('/:studentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { studentId } = req.params;
@@ -1435,7 +1435,7 @@ router.delete('/:studentId', authMiddleware.authenticateToken, async (req, res) 
  *            status: String (optional: "active", "promoted", "repeated", "transferred", "graduated")
  *          }
  */
-router.post('/enrollments/create', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/enrollments/create', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { studentId, classId, sessionId, status = 'active' } = req.body;
@@ -1545,7 +1545,7 @@ router.post('/enrollments/create', authMiddleware.authenticateToken, async (req,
  *            ]
  *          }
  */
-router.post('/enrollments/bulk', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/enrollments/bulk', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { enrollments } = req.body;
@@ -1624,7 +1624,7 @@ router.post('/enrollments/bulk', authMiddleware.authenticateToken, async (req, r
  *            sessionId: Number (required, ID from academic_years table)
  *          }
  */
-router.get('/enrollments/class/:classId', authMiddleware.authenticateToken, async (req, res) => {
+router.get('/enrollments/class/:classId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { classId } = req.params;
@@ -1679,7 +1679,7 @@ router.get('/enrollments/class/:classId', authMiddleware.authenticateToken, asyn
  * @desc    Get all enrollments for a specific student (complete enrollment history)
  * @access  Private
  */
-router.get('/:studentId/enrollments', authMiddleware.authenticateToken, async (req, res) => {
+router.get('/:studentId/enrollments', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { studentId } = req.params;
@@ -1741,7 +1741,7 @@ router.get('/:studentId/enrollments', authMiddleware.authenticateToken, async (r
  *            status: String (optional)
  *          }
  */
-router.put('/enrollments/:enrollmentId', authMiddleware.authenticateToken, async (req, res) => {
+router.put('/enrollments/:enrollmentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { enrollmentId } = req.params;
@@ -1839,7 +1839,7 @@ router.put('/enrollments/:enrollmentId', authMiddleware.authenticateToken, async
  * @desc    Delete an enrollment record (cascades to associated scores)
  * @access  Private
  */
-router.delete('/enrollments/:enrollmentId', authMiddleware.authenticateToken, async (req, res) => {
+router.delete('/enrollments/:enrollmentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { enrollmentId } = req.params;
@@ -1878,7 +1878,7 @@ router.delete('/enrollments/:enrollmentId', authMiddleware.authenticateToken, as
  * @desc    Sends the bulk enrollment CSV template to the specified email
  * @access  Private
  */
-router.post('/email/template', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/email/template', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) {
@@ -1936,7 +1936,7 @@ router.post('/email/template', authMiddleware.authenticateToken, async (req, res
  * @desc    Allows a logged-in student to enroll themselves for a specific session
  * @access  Private (Student only)
  */
-router.post('/self-enroll', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/self-enroll', authMiddleware.authenticateToken, authMiddleware.requireStudent, checkSubscription, async (req, res) => {
   const client = await pool.connect();
   try {
     // 1. Security Check: Ensure the user is a student

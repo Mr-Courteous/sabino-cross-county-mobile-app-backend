@@ -748,7 +748,7 @@ router.post('/revenuecat-webhook', async (req, res) => {
  * @desc    Manual sync with RevenueCat API to ensure local DB matches RC status
  * @access  Private (School Admin)
  */
-router.post('/sync-subscription', authMiddleware.authenticateToken, async (req, res) => {
+router.post('/sync-subscription', authMiddleware.authenticateToken, authMiddleware.requireSchool, async (req, res) => {
   try {
     const schoolId = req.user.id;
     const RC_API_KEY = process.env.REVENUECAT_REST_API_KEY;
@@ -809,7 +809,7 @@ router.post('/sync-subscription', authMiddleware.authenticateToken, async (req, 
 
 
 // Get user schools (requires auth)
-router.get('/', authMiddleware.authenticateToken, async (req, res) => {
+router.get('/', authMiddleware.authenticateToken, authMiddleware.requireSchool, async (req, res) => {
   try {
     // STRICT SECURITY: Extract userId ONLY from token, never from req.body or req.query
     const userId = req.user?.id;
@@ -836,7 +836,7 @@ router.get('/', authMiddleware.authenticateToken, async (req, res) => {
 });
 
 // Get current school details using token
-router.get('/me', authMiddleware.authenticateToken, async (req, res) => {
+router.get('/me', authMiddleware.authenticateToken, checkSubscription, authMiddleware.requireSchool, async (req, res) => {
   try {
     // STRICT SECURITY: Extract schoolId ONLY from token, never from req.body or req.query
     // The authenticateToken middleware attaches the decoded token to req.user
@@ -893,7 +893,7 @@ router.get('/me', authMiddleware.authenticateToken, async (req, res) => {
 });
 
 // Update current school details using token
-router.put('/me', authMiddleware.authenticateToken, async (req, res) => {
+router.put('/me', authMiddleware.authenticateToken, authMiddleware.requireSchool, async (req, res) => {
   try {
     const schoolId = req.user?.id;
     if (!schoolId) {
@@ -933,7 +933,7 @@ router.put('/me', authMiddleware.authenticateToken, async (req, res) => {
 });
 
 // Update school (requires auth)
-router.put('/:schoolId', authMiddleware.authenticateToken, authMiddleware.checkSchoolOwnership, async (req, res) => {
+router.put('/:schoolId', authMiddleware.authenticateToken, authMiddleware.requireSchool, authMiddleware.checkSchoolOwnership, async (req, res) => {
   try {
     const { schoolId } = req.params;
     const { name, address, city, state, country, phone, email, registration_code } = req.body;
@@ -968,7 +968,7 @@ router.put('/:schoolId', authMiddleware.authenticateToken, authMiddleware.checkS
 });
 
 // Delete school (requires auth)
-router.delete('/:schoolId', authMiddleware.authenticateToken, authMiddleware.checkSchoolOwnership, async (req, res) => {
+router.delete('/:schoolId', authMiddleware.authenticateToken, authMiddleware.requireSchool, authMiddleware.checkSchoolOwnership, async (req, res) => {
   try {
     const { schoolId } = req.params;
 

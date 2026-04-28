@@ -77,8 +77,8 @@ app.use('/api/schools', schoolsRouter);
 app.use('/api/academic-years', academicYearsRouter);
 app.use('/api/classes', classesRouter);
 app.use('/api/preferences', preferencesRouter);
-// app.use('/api/subscriptions', subscriptionsRouter);
-// app.use('/api/payments', paymentsRouter);
+app.use('/api/subscriptions', subscriptionsRouter);
+app.use('/api/payments', paymentsRouter);
 app.use('/api/students', studentsRouter);
 app.use('/api/scores', ScoresRouter);
 app.use('/api/subjects', subjectsRouter);
@@ -138,12 +138,14 @@ const authenticateToken = require('./middleware/auth').authenticateToken;
 //   }
 // });
 
+const checkSubscription = require('./middleware/checkSubscription');
+
 /**
  * @route   GET /api/academic-sessions
  * @desc    Get all academic sessions for the school
  * @access  Private
  */
-app.get('/api/academic-sessions', authenticateToken, async (req, res) => {
+app.get('/api/academic-sessions', authenticateToken, checkSubscription, async (req, res) => {
   try {
     const pool = require('./database/db');
     
@@ -176,7 +178,7 @@ app.get('/api/academic-sessions', authenticateToken, async (req, res) => {
  * @access  Private
  * @query   { classId: number (required), session: string (required) }
  */
-app.get('/api/enrollments', authenticateToken, async (req, res) => {
+app.get('/api/enrollments', authenticateToken, checkSubscription, async (req, res) => {
   try {
     const pool = require('./database/db');
     const schoolId = req.user?.schoolId;

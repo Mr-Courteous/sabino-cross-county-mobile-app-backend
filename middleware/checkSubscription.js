@@ -1,12 +1,9 @@
 const pool = require('../database/db');
 
-/**
- * Middleware to enforce that a school has an active (completed) subscription.
- * Returns 402 Payment Required when payment is missing or expired.
- */
 const checkSubscription = async (req, res, next) => {
   try {
-    const schoolId = req.user?.id;
+    // Both school and student tokens now carry schoolId for consistency
+    const schoolId = req.user?.schoolId || req.user?.id;
 
     if (!schoolId) {
       return res.status(401).json({
@@ -21,40 +18,67 @@ const checkSubscription = async (req, res, next) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'School account not found.'
-      });
+      return res.status(404).json({ success: false, error: 'School account not found.' });
     }
 
     const { payment_status, subscription_expiry } = result.rows[0];
+    const now = new Date();
 
-    if (payment_status !== 'completed') {
+    // Step 1: Must be a paid status (completed OR grace_period)
+    const paidStatuses = ['completed', 'grace_period'];
+    if (!paidStatuses.includes(payment_status)) {
       return res.status(402).json({
         success: false,
-        error: 'Payment required. Please complete your subscription to access this resource.'
+        error: 'Subscription required.',
+        message: 'Please subscribe via the Sabino app to access this feature.',
+        paymentStatus: payment_status
       });
     }
 
-    if (subscription_expiry) {
-      const expiryDate = new Date(subscription_expiry);
-      if (expiryDate <= new Date()) {
-        // Mark as expired for future requests
-        await pool.query('UPDATE schools SET payment_status = $1 WHERE id = $2', ['expired', schoolId]);
-
-        return res.status(402).json({
-          success: false,
-          error: 'Subscription has expired. Please renew to continue using the service.'
-        });
-      }
+    // Step 2: Null expiry is a data problem — never trust it
+    if (!subscription_expiry) {
+      console.warn(`🚨 [checkSubscription] Missing expiry for school ${schoolId}`);
+      return res.status(402).json({
+        success: false,
+        error: 'Subscription data incomplete.',
+        message: 'Open the app and tap "Restore Purchases" to fix this.',
+        paymentStatus: payment_status
+      });
     }
 
-    next();
+    // Step 3: Check if actually expired
+    const expiryDate = new Date(subscription_expiry);
+    if (expiryDate <= now) {
+      // Auto-correct status in DB in case EXPIRATION webhook was delayed
+      await pool.query(
+        `UPDATE schools SET payment_status = 'expired', updated_at = CURRENT_TIMESTAMP 
+         WHERE id = $1 AND payment_status != 'expired'`,
+        [schoolId]
+      );
+      return res.status(402).json({
+        success: false,
+        error: 'Subscription expired.',
+        message: 'Your subscription has expired. Please renew via the Sabino app.',
+        paymentStatus: 'expired'
+      });
+    }
+
+    // All good — attach subscription info so route handlers can use it
+    const daysRemaining = Math.ceil((expiryDate - now) / 86400000);
+    req.subscription = {
+      status: payment_status,
+      expiresAt: expiryDate.toISOString(),
+      daysRemaining,
+      expiringSoon: daysRemaining <= 7   // frontend can show a renewal banner
+    };
+
+    return next();
+
   } catch (error) {
-    console.error('Subscription middleware error:', error);
+    console.error('[checkSubscription] Error:', error);
     return res.status(500).json({
       success: false,
-      error: 'Unable to verify subscription status. Please try again later.'
+      error: 'Unable to verify subscription status. Please try again.'
     });
   }
 };

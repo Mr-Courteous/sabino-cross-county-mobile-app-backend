@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../database/db'); // Adjusted to match your file structure
 const authMiddleware = require('../middleware/auth');
+const checkSubscription = require('../middleware/checkSubscription');
 const multer = require('multer');
 const { put } = require('@vercel/blob');
  
@@ -31,7 +32,7 @@ router.get('/test/blob-config', async (req, res) => {
  * @route   GET /api/preferences/:schoolId
  * @desc    Fetch existing school preferences for the frontend form
  */
-router.get('/:schoolId', async (req, res) => {
+router.get('/:schoolId', authMiddleware.requireSchool, authMiddleware.checkSchoolOwnership, checkSubscription, async (req, res) => {
     try {
         const { schoolId } = req.params;
 
@@ -77,7 +78,7 @@ router.get('/:schoolId', async (req, res) => {
 router.post('/:schoolId', upload.fields([
     { name: 'logo', maxCount: 1 },
     { name: 'stamp', maxCount: 1 }
-]), async (req, res) => {
+]), authMiddleware.requireSchool, authMiddleware.checkSchoolOwnership, checkSubscription, async (req, res) => {
     const { schoolId } = req.params;
 
     console.log('🔍 POST /preferences/:schoolId - Request received');
