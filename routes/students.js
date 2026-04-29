@@ -43,9 +43,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // Email transporter
 const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 587,
-  secure: false, // use TLS
+  service: 'gmail',
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_APP_PASSWORD,
@@ -439,7 +437,7 @@ router.post('/register', async (req, res) => {
         type: 'student'
       },
       process.env.JWT_SECRET,
-      { expiresIn: '24h' }
+      { expiresIn: '1h' }
     );
 
     res.status(201).json({
@@ -561,7 +559,7 @@ router.post('/login', loginLimiter, async (req, res) => {
         type: 'student'
       },
       process.env.JWT_SECRET,
-      { expiresIn: '24h' }
+      { expiresIn: '1h' }
     );
 
     // Remove password_hash from response

@@ -33,7 +33,7 @@ const generateToken = (schoolId, type, countryId = null) => {
     return jwt.sign(
         payload,
         process.env.JWT_SECRET,
-        { expiresIn: '24h' }
+        { expiresIn: '1h' }
     );
 };
 

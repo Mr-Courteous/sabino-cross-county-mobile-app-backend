@@ -476,7 +476,7 @@ router.post('/', async (req, res) => {
           countryId: existingSchool.country_id
         },
         process.env.JWT_SECRET,
-        { expiresIn: '24h' }
+        { expiresIn: '1h' }
       );
 
       return res.status(200).json({
@@ -575,7 +575,7 @@ router.post('/', async (req, res) => {
         countryId: resolvedCountryId
       },
       process.env.JWT_SECRET,
-      { expiresIn: '24h' }
+      { expiresIn: '1h' }
     );
 
     return res.status(201).json({
