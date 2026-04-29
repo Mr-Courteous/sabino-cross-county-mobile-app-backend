@@ -302,7 +302,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
 
         // Send email with PDF attachment
         const mailOptions = {
-          from: `"School Management System" <${process.env.EMAIL_USER}>`,
+          from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
           to: email,
           subject: `Official Report Card - ${studentName}`,
           html: `

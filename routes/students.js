@@ -103,7 +103,7 @@ router.post('/otp', otpLimiter, async (req, res) => {
     );
 
     const mailOptions = {
-      from: `"Student Registry" <${process.env.EMAIL_USER}>`,
+      from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "Verify Your Student Email",
       html: `
@@ -213,7 +213,7 @@ router.post('/forgot-password', otpLimiter, async (req, res) => {
     );
 
     const mailOptions = {
-      from: `"Student Registry" <${process.env.EMAIL_USER}>`,
+      from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "Password Reset Code",
       html: `
@@ -1886,7 +1886,7 @@ router.post('/email/template', authMiddleware.authenticateToken, authMiddleware.
     const csvContent = "firstName,lastName,email,phone,dateOfBirth,classId,studentNumber,gender\nJohn,Doe,john@example.com,1234567890,2005-08-16,1,STU-001,Male";
 
     const mailOptions = {
-      from: `"Sabino Registry" <${process.env.EMAIL_USER}>`,
+      from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "📋 Student Bulk Enrollment Template",
       html: `
@@ -1903,7 +1903,7 @@ router.post('/email/template', authMiddleware.authenticateToken, authMiddleware.
             </ul>
           </div>
           <p style="color: #64748B; font-size: 12px; text-align: center; margin-top: 30px;">
-            &copy; ${new Date().getFullYear()} Sabino Academy Management System
+            &copy; ${new Date().getFullYear()} Sabino Edu
           </p>
         </div>
       `,

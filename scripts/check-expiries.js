@@ -41,19 +41,19 @@ async function sendRenewalWarnings() {
         if (!school.email) continue;
 
         await transporter.sendMail({
-          from: `"Sabino Academy" <${process.env.EMAIL_USER}>`,
+          from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
           to: school.email,
           subject: 'Action Required: Your Subscription Ends in 7 Days',
           html: `
             <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
               <h2 style="color: #2563EB;">Renewal Reminder</h2>
               <p>Hello <strong>${school.name}</strong>,</p>
-              <p>This is a friendly reminder that your premium access to Sabino Academy will end on <strong>${new Date(school.subscription_expiry).toLocaleDateString()}</strong> (in 7 days).</p>
+              <p>This is a friendly reminder that your premium access to Sabino Edu will end on <strong>${new Date(school.subscription_expiry).toLocaleDateString()}</strong> (in 7 days).</p>
               <div style="background: #F1F5F9; padding: 15px; border-radius: 8px; margin: 20px 0;">
                 <p style="margin: 0;">To ensure uninterrupted access for your teachers and students, please renew your subscription today via the mobile app dashboard.</p>
               </div>
               <p>If you have any questions, our support team is here to help.</p>
-              <p>Best regards,<br/>Sabino Academy Team</p>
+              <p>Best regards,<br/>Sabino Edu Team</p>
             </div>
           `
         });

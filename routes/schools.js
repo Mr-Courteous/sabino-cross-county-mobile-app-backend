@@ -205,7 +205,7 @@ router.post('/otp', otpLimiter, async (req, res) => {
     );
 
     const mailOptions = {
-      from: `"Sabino School" <${process.env.EMAIL_USER}>`,
+      from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "Verify Your School Email",
       html: `
@@ -317,7 +317,7 @@ router.post('/forgot-password', otpLimiter, async (req, res) => {
     );
 
     const mailOptions = {
-      from: `"Sabino School" <${process.env.EMAIL_USER}>`,
+      from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: "School Account Password Reset",
       html: `
@@ -688,19 +688,19 @@ router.post('/revenuecat-webhook', async (req, res) => {
       try {
         if (school.email) {
           await transporter.sendMail({
-            from: `"Sabino Academy" <${process.env.EMAIL_USER}>`,
+            from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
             to: school.email,
-            subject: 'Your Sabino Academy Subscription has Expired',
+            subject: 'Your Sabino Edu Subscription has Expired',
             html: `
               <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
                 <h2 style="color: #2563EB;">Access Suspended</h2>
                 <p>Hello <strong>${school.name}</strong>,</p>
-                <p>Your premium subscription to Sabino Academy has expired. Your portal access and results generation have been temporarily suspended.</p>
+                <p>Your premium subscription to Sabino Edu has expired. Your portal access and results generation have been temporarily suspended.</p>
                 <div style="background: #F1F5F9; padding: 15px; border-radius: 8px; margin: 20px 0;">
                   <p style="margin: 0;"><strong>Action Required:</strong> Log in to your dashboard to renew your access and continue managing your students.</p>
                 </div>
                 <p>If you have already renewed, please ignore this message or tap "Restore Purchases" in the app.</p>
-                <p>Best regards,<br/>Sabino Academy Team</p>
+                <p>Best regards,<br/>Sabino Edu Team</p>
               </div>
             `
           });

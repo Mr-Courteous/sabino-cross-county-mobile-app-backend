@@ -302,7 +302,7 @@ router.post('/initiate', async (req, res) => {
         plan_name: plan.name,
         duration_days: plan.duration_days
       },
-      title: `Sabino Academy - ${plan.name} Subscription`,
+      title: `Sabino Edu - ${plan.name} Subscription`,
       description: `${plan.duration_days}-day access to premium features`,
     };
 
