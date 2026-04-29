@@ -127,6 +127,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
 
         s.first_name, 
         s.last_name, 
+        s.registration_number,
         s.photo as photo_url,
         sch.name as school_name,
         pref.logo_url, 
@@ -310,6 +311,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
               <h2 style="color: #333;">Official Report Card</h2>
               <p>Your report card for ${studentName} has been generated and attached to this email.</p>
               <p><strong>Student:</strong> ${studentName}</p>
+              <p><strong>Reg No:</strong> ${pref.registration_number || 'N/A'}</p>
               <p><strong>Class:</strong> ${className}</p>
               <p><strong>Term:</strong> ${termInt}</p>
               <p><strong>Session:</strong> ${sessionName}</p>
@@ -403,7 +405,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
     const lastName = pref.last_name || "N/A";
     const className = pref.class_name || "N/A";
     const sessionName = (pref.session_name && pref.session_name.trim()) ? pref.session_name : `Session ${sessionIdInt}`;
-    const admissionNo = pref.admission_number || "N/A";
+    const admissionNo = pref.registration_number || "N/A";
     
     const infoY = 75;
     
