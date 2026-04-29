@@ -20,7 +20,7 @@ const transporter = nodemailer.createTransport({
 });
 
 // Use Groq for cost-free, high-speed AI remarks
-const openai = new OpenAI({ 
+const openai = new OpenAI({
   apiKey: process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY,
   baseURL: "https://api.groq.com/openai/v1"
 });
@@ -127,7 +127,6 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
 
         s.first_name, 
         s.last_name, 
-        s.registration_number,
         s.photo as photo_url,
         sch.name as school_name,
         pref.logo_url, 
@@ -220,7 +219,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
 
     // 2. RETRIEVE OR GENERATE UNIQUE AI REMARK
     let aiRemark = "The student continues to show steady progress in their academic pursuits.";
-    
+
     try {
       // Check if a remark already exists for this enrollment + term + session
       const existingRemark = await pool.query(
@@ -236,7 +235,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
       } else {
         // Generate new remark with AI (Groq/Llama-3.3)
         console.log(`🤖 Generating new AI remark for Enrollment ${enrollmentId}...`);
-        
+
         // Contextual analysis for AI
         const validScores = data.filter(r => r.total_score > 0);
         const sorted = [...validScores].sort((a, b) => b.total_score - a.total_score);
@@ -280,10 +279,10 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
     // 3. BUILD THE PDF
     // Use autoFirstPage: false to prevent automatic blank pages, add pages manually only when needed
     const doc = new PDFDocument({ autoFirstPage: false, size: 'A4' });
-    
+
     // Add first page explicitly
     doc.addPage();
-    
+
     const buffers = [];
 
     // Collect PDF data in buffer instead of piping to response
@@ -303,7 +302,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
 
         // Send email with PDF attachment
         const mailOptions = {
-          from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
+          from: `"Sabino Edu"`,
           to: email,
           subject: `Official Report Card - ${studentName}`,
           html: `
@@ -311,7 +310,6 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
               <h2 style="color: #333;">Official Report Card</h2>
               <p>Your report card for ${studentName} has been generated and attached to this email.</p>
               <p><strong>Student:</strong> ${studentName}</p>
-              <p><strong>Reg No:</strong> ${pref.registration_number || 'N/A'}</p>
               <p><strong>Class:</strong> ${className}</p>
               <p><strong>Term:</strong> ${termInt}</p>
               <p><strong>Session:</strong> ${sessionName}</p>
@@ -386,16 +384,16 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
     // Clean white header with colored bottom border
     doc.fillColor('#ffffff').rect(0, 0, 595, 60).fill();
     doc.fillColor(themeColor).rect(0, 55, 595, 5).fill();
-    
+
     // School name on left
     doc.fontSize(22).fillColor('#1a1a1a').font('Helvetica-Bold').text(schoolName, 50, 18);
     doc.fontSize(9).fillColor('#666').font('Helvetica').text(headerText, 50, 42);
-    
+
     // Logo on right
     doc.fillColor('#f5f5f5').rect(500, 8, 50, 44).fill();
     doc.strokeColor('#ddd').lineWidth(1).rect(500, 8, 50, 44).stroke();
     await tryLoadImage(doc, pref.logo_url, 503, 12, 44, 36, 'LOGO');
-    
+
     doc.fillColor('#000000');
 
     // ═══════════════════════════════════════════════════════════════
@@ -405,21 +403,21 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
     const lastName = pref.last_name || "N/A";
     const className = pref.class_name || "N/A";
     const sessionName = (pref.session_name && pref.session_name.trim()) ? pref.session_name : `Session ${sessionIdInt}`;
-    const admissionNo = pref.registration_number || "N/A";
-    
+    const admissionNo = pref.admission_number || "N/A";
+
     const infoY = 75;
-    
+
     // Student photo box
     doc.fillColor('#f0f0f0').rect(50, infoY, 55, 55).fill();
     doc.strokeColor(themeColor).lineWidth(2).rect(50, infoY, 55, 55).stroke();
     await tryLoadImage(doc, pref.photo_url, 53, infoY + 3, 49, 49, 'STUDENT_PHOTO');
-    
+
     // Student details
     doc.fontSize(15).fillColor('#1a1a1a').font('Helvetica-Bold').text(`${firstName} ${lastName}`, 115, infoY + 5);
     doc.fontSize(10).fillColor('#555').font('Helvetica').text(`Class: ${className}`, 115, infoY + 25);
     doc.fontSize(10).fillColor('#555').font('Helvetica').text(`Term: ${termInt}  |  ${sessionName}`, 115, infoY + 40);
     doc.fontSize(9).fillColor(themeColor).font('Helvetica-Bold').text(`Adm No: ${admissionNo}`, 115, infoY + 54);
-    
+
     // Reset
     doc.fillColor('#000000');
 
@@ -439,7 +437,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
     let tableY = 150;
     const leftX = 50;
     const tableW = 500;
-    
+
     // Header
     doc.fillColor(themeColor).rect(leftX, tableY, tableW, 20).fill();
     doc.fillColor('#ffffff').fontSize(10).font('Helvetica-Bold');
@@ -447,43 +445,43 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
     doc.text('C.A.', leftX + 220, tableY + 5, { width: 60, align: 'center' });
     doc.text('EXAM', leftX + 310, tableY + 5, { width: 60, align: 'center' });
     doc.text('TOTAL', leftX + 410, tableY + 5, { width: 80, align: 'center' });
-    
+
     tableY += 20;
-    
+
     // Sort for position
     const sorted = [...deduplicatedData].sort((a, b) => (b.total_score || 0) - (a.total_score || 0));
-    
+
     // Rows
     doc.fontSize(10);
     deduplicatedData.forEach((row, i) => {
       // Background
       doc.fillColor(i % 2 === 0 ? '#fff' : '#f5f5f5').rect(leftX, tableY, tableW, 18).fill();
-      
+
       const ca = Math.round(
-        Number(row.ca1_score || 0) + 
-        Number(row.ca2_score || 0) + 
-        Number(row.ca3_score || 0) + 
+        Number(row.ca1_score || 0) +
+        Number(row.ca2_score || 0) +
+        Number(row.ca3_score || 0) +
         Number(row.ca4_score || 0)
       );
       const exam = Math.round(Number(row.exam_score || 0));
       const total = ca + exam;
-      
+
       // Text
       doc.fillColor('#222').font('Helvetica').text(row.subject_name || '-', leftX + 10, tableY + 4, { width: 200 });
       doc.text(String(ca), leftX + 220, tableY + 4, { width: 60, align: 'center' });
       doc.text(String(exam), leftX + 310, tableY + 4, { width: 60, align: 'center' });
       doc.font('Helvetica-Bold').text(String(total), leftX + 410, tableY + 4, { width: 80, align: 'center' });
-      
+
       // Line
       doc.strokeColor('#ddd').lineWidth(0.5).moveTo(leftX, tableY + 18).lineTo(leftX + tableW, tableY + 18).stroke();
-      
+
       doc.fillColor('#000').font('Helvetica');
       tableY += 18;
     });
-    
+
     // Border
     doc.strokeColor(themeColor).lineWidth(1).rect(leftX, 150, tableW, tableY - 150).stroke();
-    
+
     doc.fillColor('#000');
 
     // ═══════════════════════════════════════════════════════════════
@@ -491,17 +489,17 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
     // ═══════════════════════════════════════════════════════════════
     const remarkY = tableY + 15;
     const remarkText = (aiRemark && aiRemark.trim()) ? aiRemark : "Keep up the good work.";
-    
+
     // Comment box
     doc.fillColor('#f9f9f9').rect(50, remarkY, 500, 50).fill();
     doc.strokeColor(themeColor).lineWidth(1).rect(50, remarkY, 500, 50).stroke();
-    
+
     // Label
     doc.fontSize(10).fillColor(themeColor).font('Helvetica-Bold').text("Principal's Comment", 60, remarkY + 5);
-    
+
     // Comment text
     doc.fontSize(9).fillColor('#444').font('Helvetica').text(remarkText, 60, remarkY + 20, { width: 420 });
-    
+
     // Stamp
     await tryLoadImage(doc, pref.stamp_url, 510, remarkY + 5, 35, 35, 'STAMP');
 
@@ -509,10 +507,10 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
     // FOOTER - New Clean Design
     // ═══════════════════════════════════════════════════════════════
     const footerY = tableY + 70;
-    
+
     // Divider
     doc.strokeColor(themeColor).lineWidth(2).moveTo(50, footerY).lineTo(550, footerY).stroke();
-    
+
     // Footer text
     doc.fontSize(8).fillColor('#888').text(`Generated: ${new Date().toLocaleDateString()}`, 50, footerY + 8, { align: 'center', width: 500 });
     doc.fontSize(7).fillColor('#aaa').text('School Management System', 50, footerY + 20, { align: 'center', width: 500 });
@@ -1148,7 +1146,7 @@ router.get('/preview/official-report/:enrollmentId', async (req, res) => {
 
     // 2. GET AI REMARK - Same as email route
     let aiRemark = "The student continues to show steady progress in their academic pursuits.";
-    
+
     try {
       const existingRemark = await pool.query(
         `SELECT ai_remark FROM report_remarks 
@@ -1166,10 +1164,10 @@ router.get('/preview/official-report/:enrollmentId', async (req, res) => {
     // 3. BUILD PDF - Same logic as email route but collect as base64
     // Use autoFirstPage: false to prevent automatic blank pages
     const doc = new PDFDocument({ autoFirstPage: false, size: 'A4' });
-    
+
     // Add first page explicitly
     doc.addPage();
-    
+
     const buffers = [];
 
     doc.on('data', (chunk) => {
@@ -1351,10 +1349,10 @@ router.get('/preview/student-grades/:enrollmentId', async (req, res) => {
     // Generate PDF
     // Use autoFirstPage: false to prevent automatic blank pages
     const doc = new PDFDocument({ autoFirstPage: false, size: 'A4' });
-    
+
     // Add first page explicitly
     doc.addPage();
-    
+
     const buffers = [];
 
     doc.on('data', (chunk) => buffers.push(chunk));
