@@ -168,11 +168,12 @@ router.post('/otp', otpLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email is required" });
-
+    const normalizedEmail = email.trim().toLowerCase();
+    
     // Check if school with this email already exists
     const existingSchool = await pool.query(
       'SELECT id, name, payment_status FROM schools WHERE email = $1',
-      [email]
+      [normalizedEmail]
     );
 
     if (existingSchool.rows.length > 0) {
@@ -245,9 +246,11 @@ router.post('/verify-otp', async (req, res) => {
       });
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
+    
     const verifyRes = await pool.query(
       'SELECT * FROM email_verifications WHERE email = $1 AND expires_at > NOW()',
-      [email]
+      [normalizedEmail]
     );
 
     if (verifyRes.rows.length === 0) {
@@ -267,7 +270,7 @@ router.post('/verify-otp', async (req, res) => {
 
     await pool.query(
       'UPDATE email_verifications SET is_verified = true WHERE email = $1',
-      [email]
+      [normalizedEmail]
     );
 
     return res.status(200).json({
@@ -290,10 +293,11 @@ router.post('/forgot-password', otpLimiter, async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email is required" });
 
+    const normalizedEmail = email.trim().toLowerCase();
     // Check if school with this email exists
     const existingSchool = await pool.query(
       'SELECT id, name FROM schools WHERE email = $1',
-      [email]
+      [normalizedEmail]
     );
 
     if (existingSchool.rows.length === 0) {
@@ -381,12 +385,12 @@ router.post('/reset-password', async (req, res) => {
     await client.query('BEGIN');
 
     // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
-
+    const normalizedEmail = email.trim().toLowerCase();
+    
     // Update school password
     const updateResult = await client.query(
       'UPDATE schools SET password = $1, updated_at = CURRENT_TIMESTAMP WHERE email = $2 RETURNING id',
-      [hashedPassword, email]
+      [hashedPassword, normalizedEmail]
     );
 
     if (updateResult.rows.length === 0) {
@@ -498,6 +502,8 @@ router.post('/', async (req, res) => {
       });
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
+
     // New registration path
     const hashedPassword = await bcrypt.hash(password, 10);
     const registrationCode = crypto.randomBytes(4).toString('hex').toUpperCase();
@@ -512,7 +518,7 @@ router.post('/', async (req, res) => {
       [
         registrationCode,
         name,
-        email,
+        normalizedEmail,
         hashedPassword,
         school_type,
         country_id || null,

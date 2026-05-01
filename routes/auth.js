@@ -46,9 +46,10 @@ router.post('/login', loginLimiter, async (req, res) => {
             return res.status(400).json({ error: 'Email and password required' });
         }
 
+        const normalizedEmail = email.trim().toLowerCase();
         const result = await pool.query(
             'SELECT id, name, email, password, country FROM schools WHERE email = $1',
-            [email]
+            [normalizedEmail]
         );
 
         const school = result.rows[0];

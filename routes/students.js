@@ -76,10 +76,12 @@ router.post('/otp', otpLimiter, async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email is required" });
 
+    const normalizedEmail = email.trim().toLowerCase();
+    
     // Check if student with this email already exists
     const existingStudent = await pool.query(
       'SELECT id, first_name, last_name FROM students WHERE email = $1',
-      [email]
+      [normalizedEmail]
     );
 
     if (existingStudent.rows.length > 0) {
@@ -99,12 +101,12 @@ router.post('/otp', otpLimiter, async (req, res) => {
        VALUES ($1, $2, $3) 
        ON CONFLICT (email) DO UPDATE 
        SET otp_code = $2, expires_at = $3, is_verified = false`,
-      [email, otpHash, expiresAt]
+      [normalizedEmail, otpHash, expiresAt]
     );
 
     const mailOptions = {
       from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
-      to: email,
+      to: normalizedEmail,
       subject: "Verify Your Student Email",
       html: `
         <div style="font-family: sans-serif; text-align: center; border: 1px solid #ddd; padding: 20px;">
@@ -141,9 +143,10 @@ router.post('/verify-otp', async (req, res) => {
       });
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
     const verifyRes = await pool.query(
       'SELECT * FROM email_verifications WHERE email = $1 AND expires_at > NOW()',
-      [email]
+      [normalizedEmail]
     );
 
     if (verifyRes.rows.length === 0) {
@@ -163,7 +166,7 @@ router.post('/verify-otp', async (req, res) => {
 
     await pool.query(
       'UPDATE email_verifications SET is_verified = true WHERE email = $1',
-      [email]
+      [normalizedEmail]
     );
 
     return res.status(200).json({
@@ -186,10 +189,12 @@ router.post('/forgot-password', otpLimiter, async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email is required" });
 
+    const normalizedEmail = email.trim().toLowerCase();
+    
     // Check if student with this email exists
     const existingStudent = await pool.query(
       'SELECT id, first_name FROM students WHERE email = $1',
-      [email]
+      [normalizedEmail]
     );
 
     if (existingStudent.rows.length === 0) {
@@ -209,12 +214,12 @@ router.post('/forgot-password', otpLimiter, async (req, res) => {
        VALUES ($1, $2, $3) 
        ON CONFLICT (email) DO UPDATE 
        SET otp_code = $2, expires_at = $3, is_verified = false`,
-      [email, otpHash, expiresAt]
+      [normalizedEmail, otpHash, expiresAt]
     );
 
     const mailOptions = {
       from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
-      to: email,
+      to: normalizedEmail,
       subject: "Password Reset Code",
       html: `
         <div style="font-family: sans-serif; text-align: center; border: 1px solid #ddd; padding: 20px;">
@@ -282,7 +287,7 @@ router.post('/reset-password', async (req, res) => {
     // Update student password
     const updateResult = await client.query(
       'UPDATE students SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE email = $2 RETURNING id',
-      [passwordHash, email]
+      [passwordHash, normalizedEmail]
     );
 
     if (updateResult.rows.length === 0) {
@@ -294,7 +299,7 @@ router.post('/reset-password', async (req, res) => {
     }
 
     // Clean up verification record
-    await client.query('DELETE FROM email_verifications WHERE email = $1', [email]);
+    await client.query('DELETE FROM email_verifications WHERE email = $1', [normalizedEmail]);
 
     await client.query('COMMIT');
 
@@ -352,6 +357,8 @@ router.post('/register', async (req, res) => {
       }
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
+
     // Verify school exists by registration_code
     const schoolCheck = await client.query(
       'SELECT id, name FROM schools WHERE registration_code = $1',
@@ -371,7 +378,7 @@ router.post('/register', async (req, res) => {
     // Check if email already exists
     const emailCheck = await client.query(
       'SELECT id FROM students WHERE email = $1',
-      [email]
+      [normalizedEmail]
     );
 
     if (emailCheck.rows.length > 0) {
@@ -384,7 +391,7 @@ router.post('/register', async (req, res) => {
     // Verify email is verified in email_verifications table
     const verificationCheck = await client.query(
       'SELECT is_verified FROM email_verifications WHERE email = $1 AND is_verified = true',
-      [email]
+      [normalizedEmail]
     );
 
     if (verificationCheck.rows.length === 0) {
@@ -419,11 +426,11 @@ router.post('/register', async (req, res) => {
         registration_number, phone, date_of_birth, gender, address
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING id, school_id, first_name, last_name, email, registration_number, phone, date_of_birth, gender, address, created_at`,
-      [schoolId, firstName, lastName, email, passwordHash, finalRegNumber, phone || null, dateOfBirth || null, gender || null, address || null]
+      [schoolId, firstName, lastName, normalizedEmail, passwordHash, finalRegNumber, phone || null, dateOfBirth || null, gender || null, address || null]
     );
 
     // Clean up verification record
-    await client.query('DELETE FROM email_verifications WHERE email = $1', [email]);
+    await client.query('DELETE FROM email_verifications WHERE email = $1', [normalizedEmail]);
 
     await client.query('COMMIT');
 
@@ -490,21 +497,22 @@ router.post('/login', loginLimiter, async (req, res) => {
     }
 
     // Find student by email
-    const result = await pool.query(
-      `SELECT 
-        s.id, s.school_id, s.first_name, s.last_name, s.email, 
-        s.registration_number, s.password_hash, s.phone, s.date_of_birth, 
-        s.gender, s.photo, s.address,
-        sc.name as school_name,
-        sc.country_id as school_country_id,
-        sc.country as school_country_name,
-        sc.phone as school_phone,
-        sc.email as school_email
-      FROM students s
-      JOIN schools sc ON s.school_id = sc.id
-      WHERE s.email = $1`,
-      [email]
-    );
+      const normalizedEmail = email.trim().toLowerCase();
+      const result = await pool.query(
+        `SELECT 
+          s.id, s.school_id, s.first_name, s.last_name, s.email, 
+          s.registration_number, s.password_hash, s.phone, s.date_of_birth, 
+          s.gender, s.photo, s.address,
+          sc.name as school_name,
+          sc.country_id as school_country_id,
+          sc.country as school_country_name,
+          sc.phone as school_phone,
+          sc.email as school_email
+        FROM students s
+        JOIN schools sc ON s.school_id = sc.id
+        WHERE s.email = $1`,
+        [normalizedEmail]
+      );
 
     if (result.rows.length === 0) {
       return res.status(401).json({

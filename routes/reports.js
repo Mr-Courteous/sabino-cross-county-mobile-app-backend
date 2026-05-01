@@ -127,6 +127,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
 
         s.first_name, 
         s.last_name, 
+        s.registration_number as admission_number,
         s.photo as photo_url,
         sch.name as school_name,
         pref.logo_url, 
@@ -1100,6 +1101,7 @@ router.get('/preview/official-report/:enrollmentId', async (req, res) => {
       SELECT 
         s.first_name, 
         s.last_name, 
+        s.registration_number as admission_number,
         s.photo as photo_url,
         sch.name as school_name,
         pref.logo_url, 
@@ -1204,6 +1206,7 @@ router.get('/preview/official-report/:enrollmentId', async (req, res) => {
     doc.fontSize(14).fillColor(themeColor).font('Helvetica-Bold').text(`${pref.first_name} ${pref.last_name}`, 50, 100);
     doc.fontSize(10).fillColor('#555').font('Helvetica').text(`Class: ${pref.class_name}`, 50, 120);
     doc.fontSize(10).fillColor('#666').font('Helvetica').text(`Term ${termInt} • ${pref.session_name}`, 50, 135);
+    doc.fontSize(10).fillColor(themeColor).font('Helvetica-Bold').text(`Adm No: ${pref.admission_number || 'N/A'}`, 50, 150);
 
     // Deduplicate data by subject
     const uniqueSubjects = {};
@@ -1317,7 +1320,7 @@ router.get('/preview/student-grades/:enrollmentId', async (req, res) => {
     // Fetch grades data
     const query = `
       SELECT 
-        s.first_name, s.last_name, s.photo,
+        s.first_name, s.last_name, s.registration_number as admission_number, s.photo,
         sch.name as school_name,
         c.display_name as class_name,
         pref.theme_color,
@@ -1382,6 +1385,7 @@ router.get('/preview/student-grades/:enrollmentId', async (req, res) => {
     doc.fontSize(14).fillColor(themeColor).font('Helvetica-Bold').text(`${student.first_name} ${student.last_name}`, 50, 100);
     doc.fontSize(10).fillColor('#555').font('Helvetica').text(`Class: ${student.class_name}`, 50, 120);
     doc.fontSize(10).text(`Term ${termInt} • ${student.session_name}`, 50, 135);
+    doc.fontSize(10).fillColor(themeColor).font('Helvetica-Bold').text(`Adm No: ${student.admission_number || 'N/A'}`, 50, 150);
 
     // Deduplicate by subject
     const uniqueGrades = {};
