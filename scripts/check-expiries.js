@@ -52,7 +52,7 @@ async function sendRenewalWarnings() {
               <div style="background: #F1F5F9; padding: 15px; border-radius: 8px; margin: 20px 0;">
                 <p style="margin: 0;">To ensure uninterrupted access for your teachers and students, please renew your subscription today via the mobile app dashboard.</p>
               </div>
-              <p>If you have any questions, our support team is here to help.</p>
+              <p>If you have any questions, Login to your dashboard and reach out to us from there. Thanks.</p>
               <p>Best regards,<br/>Sabino Edu Team</p>
             </div>
           `

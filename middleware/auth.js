@@ -128,7 +128,7 @@ exports.requireStudent = (req, res, next) => {
     });
   }
 
-  if (req.user.type !== 'student') {
+  if (req.user.type !== 'student' && req.user.type !== 'school') {
     return res.status(403).json({
       success: false,
       error: 'Access denied. This resource is for student accounts only.',

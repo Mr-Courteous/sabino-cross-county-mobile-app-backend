@@ -18,6 +18,7 @@ const subjectsRouter = require('./routes/subjects');
 const ReportsRouter = require ('./routes/reports')
 
 const app = express();
+app.set('trust proxy', 1); // Trust first hop (e.g., Vercel, Cloudflare, Nginx)
 
 // Middleware - CORS first
 app.use(cors({

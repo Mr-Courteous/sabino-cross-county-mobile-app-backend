@@ -1891,7 +1891,7 @@ router.post('/email/template', authMiddleware.authenticateToken, authMiddleware.
       return res.status(400).json({ success: false, error: "Recipient email is required." });
     }
 
-    const csvContent = "firstName,lastName,email,phone,dateOfBirth,classId,studentNumber,gender\nJohn,Doe,john@example.com,1234567890,2005-08-16,1,STU-001,Male";
+    const csvContent = "firstName,lastName,email,phone,dateOfBirth,studentNumber,gender\nJohn,Doe,john@example.com,1234567890,2005-08-16,STU-001,Male";
 
     const mailOptions = {
       from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
@@ -1906,7 +1906,7 @@ router.post('/email/template', authMiddleware.authenticateToken, authMiddleware.
             <p style="margin: 0; font-weight: bold; color: #334155;">Instructions:</p>
             <ul style="margin: 10px 0 0 0; color: #475569; font-size: 14px;">
               <li>Keep the column headers exactly as they are.</li>
-              <li>Ensure <strong>classId</strong> matches the IDs in your school dashboard.</li>
+              <li>Do not include <strong>classId</strong> in the CSV; class selection is handled in the portal.</li>
               <li>Save as .csv before uploading back to the portal.</li>
             </ul>
           </div>
