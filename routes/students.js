@@ -1891,7 +1891,7 @@ router.post('/email/template', authMiddleware.authenticateToken, authMiddleware.
       return res.status(400).json({ success: false, error: "Recipient email is required." });
     }
 
-    const csvContent = "firstName,lastName,email,phone,dateOfBirth,studentNumber,gender\nJohn,Doe,john@example.com,1234567890,2005-08-16,STU-001,Male";
+    const csvContent = "firstName,lastName,email,phone,studentNumber,gender\nJohn,Doe,john@example.com,1234567890,STU-001,Male";
 
     const mailOptions = {
       from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
