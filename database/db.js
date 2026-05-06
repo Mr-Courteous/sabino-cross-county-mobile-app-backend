@@ -12,12 +12,12 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 
   // If DATABASE_URL is missing, it falls back to your old individual settings
-  host: process.env.DATABASE_URL ? undefined : (process.env.DB_HOST || 'localhost'),
-  port: process.env.DATABASE_URL ? undefined : (process.env.DB_PORT || 5432),
-  database: process.env.DATABASE_URL ? undefined : (process.env.DB_NAME || 'sabino_schools'),
-  user: process.env.DATABASE_URL ? undefined : (process.env.DB_USER || 'postgres'),
-  password: process.env.DATABASE_URL ? undefined : (process.env.DB_PASSWORD || ''),
-  
+  // host: process.env.DATABASE_URL ? undefined : (process.env.DB_HOST || 'localhost'),
+  // port: process.env.DATABASE_URL ? undefined : (process.env.DB_PORT || 5432),
+  // database: process.env.DATABASE_URL ? undefined : (process.env.DB_NAME || 'sabino_schools'),
+  // user: process.env.DATABASE_URL ? undefined : (process.env.DB_USER || 'postgres'),
+  // password: process.env.DATABASE_URL ? undefined : (process.env.DB_PASSWORD || ''),
+
   // SSL configuration - Required for many cloud DBs like Supabase/Neon/Render
   ssl: isProduction ? { rejectUnauthorized: false } : false,
 
@@ -32,12 +32,12 @@ const pool = new Pool({
 console.log('\n🗄️  [DB] Attempting connection...');
 console.log(`📊 [DB] Mode: ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}`);
 if (process.env.DATABASE_URL) {
-    console.log('📡 [DB] Using Cloud Connection String');
+  console.log('📡 [DB] Using Cloud Connection String');
 } else {
-    console.log('🏠 [DB] Using Localhost Configuration');
-    console.log(`   Host: ${process.env.DB_HOST || 'localhost'}`);
-    console.log(`   Port: ${process.env.DB_PORT || 5432}`);
-    console.log(`   Database: ${process.env.DB_NAME || 'sabino_schools'}`);
+  console.log('🏠 [DB] Using Localhost Configuration');
+  console.log(`   Host: ${process.env.DB_HOST || 'localhost'}`);
+  console.log(`   Port: ${process.env.DB_PORT || 5432}`);
+  console.log(`   Database: ${process.env.DB_NAME || 'sabino_schools'}`);
 }
 
 pool.on('connect', () => {

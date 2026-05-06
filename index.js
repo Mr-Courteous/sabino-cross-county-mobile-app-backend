@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const morgan = require('morgan'); // 1. Import Morgan
+const cron = require('node-cron');
+const { runBackup } = require('./database/backup-db');
 require('dotenv').config({ path: path.resolve(__dirname, './.env.local') });
 
 // Routes
@@ -15,7 +17,7 @@ const paymentsRouter = require('./routes/payments');
 const studentsRouter = require('./routes/students');
 const ScoresRouter = require('./routes/scores');
 const subjectsRouter = require('./routes/subjects');
-const ReportsRouter = require ('./routes/reports')
+const ReportsRouter = require('./routes/reports')
 
 const app = express();
 app.set('trust proxy', 1); // Trust first hop (e.g., Vercel, Cloudflare, Nginx)
@@ -31,7 +33,7 @@ app.use(express.json());
 
 // 2. Replace manual logging with Morgan
 // 'dev' gives you color-coded status logs and response times
-app.use(morgan('dev')); 
+app.use(morgan('dev'));
 
 // Custom logger for all incoming requests
 app.use((req, res, next) => {
@@ -45,19 +47,19 @@ app.get('/health', async (req, res) => {
   try {
     const pool = require('./database/db');
     const dbCheck = await pool.query('SELECT NOW()');
-    res.json({ 
-      status: 'ok', 
+    res.json({
+      status: 'ok',
       database: 'connected',
       timestamp: new Date().toISOString(),
       dbTime: dbCheck.rows[0].now
     });
   } catch (error) {
     console.error('❌ Health check failed:', error.message);
-    res.status(500).json({ 
-      status: 'error', 
+    res.status(500).json({
+      status: 'error',
       database: 'disconnected',
       error: error.message,
-      timestamp: new Date().toISOString() 
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -65,8 +67,8 @@ app.get('/health', async (req, res) => {
 // Debug endpoint - Test API connectivity without auth
 app.post('/api/test-message', (req, res) => {
   console.log('✅ [TEST] API connection verified');
-  res.json({ 
-    success: true, 
+  res.json({
+    success: true,
     message: 'API connection is working properly!',
     receivedData: req.body
   });
@@ -83,7 +85,7 @@ app.use('/api/payments', paymentsRouter);
 app.use('/api/students', studentsRouter);
 app.use('/api/scores', ScoresRouter);
 app.use('/api/subjects', subjectsRouter);
-app.use('/api/reports', ReportsRouter); 
+app.use('/api/reports', ReportsRouter);
 
 // Public data endpoints (subjects, academic sessions, enrollments)
 // These are mounted at /api level for broader access
@@ -99,7 +101,7 @@ const authenticateToken = require('./middleware/auth').authenticateToken;
 //     const pool = require('./database/db');
 //     const schoolId = req.user?.schoolId;
 //     const countryId = req.user?.countryId;
-    
+
 //     if (!schoolId) {
 //       return res.status(401).json({ success: false, error: 'Authentication required' });
 //     }
@@ -149,7 +151,7 @@ const checkSubscription = require('./middleware/checkSubscription');
 app.get('/api/academic-sessions', authenticateToken, checkSubscription, async (req, res) => {
   try {
     const pool = require('./database/db');
-    
+
     console.log(`📥 GET /academic-sessions - Fetching all session IDs for User: ${req.user?.id}`);
 
     // Added 'id' to the selection
@@ -159,7 +161,7 @@ app.get('/api/academic-sessions', authenticateToken, checkSubscription, async (r
       FROM academic_years 
       ORDER BY year_label DESC
     `;
-    
+
     const result = await pool.query(query);
 
     res.status(200).json({
@@ -242,5 +244,53 @@ app.listen(PORT, () => {
   console.log(`✓ sabino-server listening on port ${PORT}`);
   console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
 });
+
+// ─────────────────────────────────────────────
+// CRON JOBS
+// ─────────────────────────────────────────────
+
+// 1. Daily Tasks (12:00 AM UTC)
+cron.schedule('0 0 * * *', async () => {
+  console.log('⏰ [Cron] Running scheduled daily tasks (12:00 AM UTC)...');
+
+  // A. Database Backup
+  try {
+    await runBackup();
+  } catch (backupErr) {
+    console.error('❌ [Cron] Daily backup failed:', backupErr.message);
+  }
+
+  // B. Proactive Expiry Check
+  try {
+    const pool = require('./database/db');
+    const result = await pool.query(`
+      UPDATE schools 
+      SET payment_status = 'expired', updated_at = CURRENT_TIMESTAMP
+      WHERE payment_status = 'completed' 
+        AND subscription_expiry < CURRENT_TIMESTAMP
+      RETURNING id, name, email
+    `);
+    if (result.rowCount > 0) {
+      console.log(`✅ [Cron] Proactive Expiry: Marked ${result.rowCount} school(s) as expired`);
+    } else {
+      console.log('ℹ️ [Cron] Proactive Expiry: No newly expired schools found');
+    }
+  } catch (expiryErr) {
+    console.error('❌ [Cron] Proactive Expiry check failed:', expiryErr.message);
+  }
+}, {
+  scheduled: true,
+  timezone: "UTC"
+});
+
+// 2. Test Job (Every 1 Minute) - COMMENT THIS OUT IN PRODUCTION
+// cron.schedule('* * * * *', async () => {
+//   console.log('⏰ [Cron] Running 1-minute test backup...');
+//   try {
+//     await runBackup();
+//   } catch (err) {
+//     console.error('❌ [Cron] 1-minute test backup failed:', err.message);
+//   }
+// });
 
 module.exports = app;

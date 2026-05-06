@@ -386,6 +386,7 @@ router.post('/reset-password', async (req, res) => {
 
     // Hash password
     const normalizedEmail = email.trim().toLowerCase();
+    const hashedPassword = await bcrypt.hash(password, 10);
     
     // Update school password
     const updateResult = await client.query(
