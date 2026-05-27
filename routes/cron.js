@@ -53,14 +53,19 @@ router.get('/backup', verifyCron, async (req, res) => {
     result.expiryError = err.message;
   }
 
-  // 2. Database backup — fire-and-forget so Vercel doesn't timeout waiting
-  runBackup()
-    .then(() => console.log('✅ [Cron] Backup completed'))
-    .catch(err => console.error('❌ [Cron] Backup failed:', err.message));
+  // 2. Database backup — awaited so Vercel doesn't kill the function early
+  try {
+    console.log('[Cron] Starting database backup...');
+    await runBackup();
+    console.log('✅ [Cron] Backup completed successfully');
+    result.backupTriggered = true;
+  } catch (err) {
+    console.error('❌ [Cron] Backup failed:', err.message);
+    result.backupError = err.message;
+  }
 
-  result.backupTriggered = true;
-
-  res.json({ success: true, ...result });
+  // Send response only after backup is fully done
+  res.json({ success: !result.backupError, ...result });
 });
 
 module.exports = router;

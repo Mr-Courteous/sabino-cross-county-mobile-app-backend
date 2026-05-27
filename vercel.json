@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/cron/backup.js": {
+      "maxDuration": 300
+    }
+  }
+}
