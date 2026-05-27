@@ -169,7 +169,7 @@ router.post('/otp', otpLimiter, async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email is required" });
     const normalizedEmail = email.trim().toLowerCase();
-    
+
     // Check if school with this email already exists
     const existingSchool = await pool.query(
       'SELECT id, name, payment_status FROM schools WHERE email = $1',
@@ -247,7 +247,7 @@ router.post('/verify-otp', async (req, res) => {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    
+
     const verifyRes = await pool.query(
       'SELECT * FROM email_verifications WHERE email = $1 AND expires_at > NOW()',
       [normalizedEmail]
@@ -387,7 +387,7 @@ router.post('/reset-password', async (req, res) => {
     // Hash password
     const normalizedEmail = email.trim().toLowerCase();
     const hashedPassword = await bcrypt.hash(password, 10);
-    
+
     // Update school password
     const updateResult = await client.query(
       'UPDATE schools SET password = $1, updated_at = CURRENT_TIMESTAMP WHERE email = $2 RETURNING id',
@@ -991,6 +991,32 @@ router.delete('/:schoolId', authMiddleware.authenticateToken, authMiddleware.req
     res.json({ message: 'School deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/schools/push-token
+// Call this from the app right after login
+router.post('/push-token', authMiddleware.authenticateToken, async (req, res) => {
+  const { token, appVersion } = req.body;
+  const schoolId = req.user.schoolId || req.user.id;
+
+  if (!token || !token.startsWith('ExponentPushToken[')) {
+    return res.status(400).json({ success: false, error: 'Invalid push token' });
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO push_tokens (school_id, expo_token, app_version, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (school_id) DO UPDATE SET
+         expo_token = EXCLUDED.expo_token,
+         app_version = EXCLUDED.app_version,
+         updated_at = NOW()`,
+      [schoolId, token, appVersion || null]
+    );
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

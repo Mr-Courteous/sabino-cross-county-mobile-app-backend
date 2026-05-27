@@ -896,6 +896,195 @@ router.put('/profile', authMiddleware.authenticateToken, authMiddleware.requireS
 // =====================================================================
 
 /**
+ * @route   GET /api/students/enrollments
+ * @desc    Get all student enrollments for the authenticated school
+ *          Returns full enrollment detail: enrollmentId, studentId, classId, sessionId, status, student info, class name, session name
+ * @access  Private (School only)
+ * @query   status    - optional filter: 'active' | 'promoted' | 'repeated' | 'transferred' | 'graduated'
+ * @query   classId   - optional filter by class
+ * @query   sessionId - optional filter by academic session
+ */
+router.get('/enrollments', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
+  try {
+    // STRICT SECURITY: Extract schoolId ONLY from token, never from req.body or req.query
+    const schoolId = req.user?.schoolId;
+
+    if (!schoolId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication context missing. Please login again.'
+      });
+    }
+
+    // Optional query filters
+    const { status, classId, sessionId } = req.query;
+
+    console.log(`📥 GET /students/enrollments - School: ${schoolId} | Filters: status=${status}, classId=${classId}, sessionId=${sessionId}`);
+
+    // Build dynamic WHERE clause from optional filters
+    const conditions = ['e.school_id = $1'];
+    const params = [schoolId];
+    let paramIndex = 2;
+
+    if (status) {
+      conditions.push(`e.status = $${paramIndex++}`);
+      params.push(status);
+    }
+
+    if (classId) {
+      conditions.push(`e.class_id = $${paramIndex++}`);
+      params.push(classId);
+    }
+
+    if (sessionId) {
+      conditions.push(`e.session_id = $${paramIndex++}`);
+      params.push(sessionId);
+    }
+
+    const whereClause = conditions.join(' AND ');
+
+    const query = `
+      SELECT
+        e.id                    AS enrollment_id,
+        e.school_id,
+        e.student_id,
+        e.class_id,
+        e.session_id,
+        e.status                AS enrollment_status,
+        e.created_at            AS enrolled_at,
+
+        -- Student details
+        s.first_name,
+        s.last_name,
+        s.email,
+        s.registration_number,
+        s.gender,
+        s.phone,
+        s.photo,
+
+        -- Class details
+        gct.display_name        AS class_name,
+
+        -- Academic session details
+        ay.session_name         AS academic_session,
+        ay.year_label           AS academic_year
+
+      FROM enrollments e
+      JOIN students              s   ON e.student_id  = s.id
+      JOIN global_class_templates gct ON e.class_id   = gct.id
+      JOIN academic_years        ay  ON e.session_id  = ay.id
+
+      WHERE ${whereClause}
+      ORDER BY ay.year_label DESC, gct.display_name ASC, s.last_name ASC, s.first_name ASC
+    `;
+
+    const result = await pool.query(query, params);
+
+    console.log(`✅ Retrieved ${result.rowCount} enrollments for school ${schoolId}`);
+
+    res.status(200).json({
+      success: true,
+      count: result.rowCount,
+      filters: { status: status || null, classId: classId || null, sessionId: sessionId || null },
+      data: result.rows
+    });
+
+  } catch (error) {
+    console.error('❌ Get School Enrollments Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * @route   DELETE /api/students/enrollments/:enrollmentId
+ * @desc    Delete a specific enrollment record by its ID
+ * @access  Private (School only)
+ * @param   enrollmentId - the specific enrollment to remove (get this from GET /students/enrollments)
+ */
+router.delete('/enrollments/:enrollmentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    // STRICT SECURITY: Extract schoolId ONLY from token, never from req.body or req.query
+    const schoolId = req.user?.schoolId;
+    const { enrollmentId } = req.params;
+
+    if (!schoolId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication context missing. Please login again.'
+      });
+    }
+
+    if (!enrollmentId || isNaN(enrollmentId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'A valid enrollmentId is required.'
+      });
+    }
+
+    console.log(`📥 DELETE /students/enrollments/${enrollmentId} - School: ${schoolId}`);
+
+    await client.query('BEGIN');
+
+    // Fetch the enrollment first — confirm it belongs to this school
+    const enrollmentCheck = await client.query(
+      `SELECT 
+         e.id, e.student_id, e.class_id, e.session_id, e.status,
+         s.first_name, s.last_name,
+         gct.display_name AS class_name,
+         ay.session_name  AS academic_session
+       FROM enrollments e
+       JOIN students               s   ON e.student_id = s.id
+       JOIN global_class_templates gct ON e.class_id   = gct.id
+       JOIN academic_years         ay  ON e.session_id = ay.id
+       WHERE e.id = $1 AND e.school_id = $2`,
+      [enrollmentId, schoolId]
+    );
+
+    if (enrollmentCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({
+        success: false,
+        error: 'Enrollment not found or does not belong to your school.'
+      });
+    }
+
+    const enrollment = enrollmentCheck.rows[0];
+
+    // Delete the specific enrollment
+    await client.query(
+      'DELETE FROM enrollments WHERE id = $1 AND school_id = $2',
+      [enrollmentId, schoolId]
+    );
+
+    await client.query('COMMIT');
+
+    console.log(`✅ Enrollment ${enrollmentId} deleted - Student: ${enrollment.first_name} ${enrollment.last_name}, Class: ${enrollment.class_name}, Session: ${enrollment.academic_session}`);
+
+    res.status(200).json({
+      success: true,
+      message: `Enrollment removed successfully.`,
+      data: {
+        deletedEnrollmentId: parseInt(enrollmentId),
+        studentId: enrollment.student_id,
+        studentName: `${enrollment.first_name} ${enrollment.last_name}`,
+        class: enrollment.class_name,
+        session: enrollment.academic_session
+      }
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Delete Enrollment Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+
+/**
  * @route   POST /api/students/bulk
  * @desc    Bulk create students for the authenticated school with automatic enrollment
  * @access  Private
@@ -1841,43 +2030,7 @@ router.put('/enrollments/:enrollmentId', authMiddleware.authenticateToken, authM
   }
 });
 
-/**
- * @route   DELETE /api/students/enrollments/:enrollmentId
- * @desc    Delete an enrollment record (cascades to associated scores)
- * @access  Private
- */
-router.delete('/enrollments/:enrollmentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
-  try {
-    const schoolId = req.user?.schoolId;
-    const { enrollmentId } = req.params;
 
-    const result = await pool.query(
-      'DELETE FROM enrollments WHERE id = $1 AND school_id = $2 RETURNING id',
-      [enrollmentId, schoolId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Not Found',
-        error: 'Enrollment record not found'
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Enrollment record deleted successfully'
-    });
-
-  } catch (error) {
-    console.error('Delete Enrollment Error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Server Error',
-      error: error.message
-    });
-  }
-});
 
 
 /**
@@ -2015,6 +2168,199 @@ router.post('/self-enroll', authMiddleware.authenticateToken, authMiddleware.req
     res.status(500).json({ success: false, error: error.message });
   } finally {
     client.release();
+  }
+});
+
+/**
+ * @route   DELETE /api/students/:studentId/enrollment
+ * @desc    Remove a student's enrollment from the school (unenroll without deleting the student record)
+ * @access  Private (Authenticated schools only)
+ * @param   studentId - the student to unenroll
+ */
+router.delete('/:studentId/enrollment', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    // STRICT SECURITY: Extract schoolId ONLY from token, never from req.body or req.query
+    const schoolId = req.user?.schoolId;
+    const { studentId } = req.params;
+
+    if (!schoolId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication context missing. Please login again.'
+      });
+    }
+
+    if (!studentId || isNaN(studentId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'A valid studentId is required.'
+      });
+    }
+
+    console.log(`📥 DELETE /students/${studentId}/enrollment - Requested by School: ${schoolId}`);
+
+    await client.query('BEGIN');
+
+    // Confirm the enrollment belongs to this school before deleting
+    const enrollmentCheck = await client.query(
+      `SELECT id FROM enrollments
+       WHERE student_id = $1 AND school_id = $2`,
+      [studentId, schoolId]
+    );
+
+    if (enrollmentCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({
+        success: false,
+        error: 'Enrollment not found or does not belong to your school.'
+      });
+    }
+
+    // Delete the enrollment record
+    const result = await client.query(
+      `DELETE FROM enrollments
+       WHERE student_id = $1 AND school_id = $2
+       RETURNING id`,
+      [studentId, schoolId]
+    );
+
+    await client.query('COMMIT');
+
+    console.log(`✅ Enrollment deleted for studentId: ${studentId} by schoolId: ${schoolId}`);
+
+    res.status(200).json({
+      success: true,
+      message: `Student enrollment successfully removed.`,
+      data: { deletedEnrollmentId: result.rows[0].id, studentId: parseInt(studentId) }
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Delete Enrollment Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+/**
+ * @route   DELETE /api/students/:studentId
+ * @desc    Permanently delete a student and all related records (cascades: enrollments, scores, reports)
+ * @access  Private (Authenticated schools only)
+ * @param   studentId - the student to delete
+ */
+router.delete('/:studentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    // STRICT SECURITY: Extract schoolId ONLY from token, never from req.body or req.query
+    const schoolId = req.user?.schoolId;
+    const { studentId } = req.params;
+
+    if (!schoolId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication context missing. Please login again.'
+      });
+    }
+
+    if (!studentId || isNaN(studentId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'A valid studentId is required.'
+      });
+    }
+
+    console.log(`📥 DELETE /students/${studentId} - Requested by School: ${schoolId}`);
+
+    await client.query('BEGIN');
+
+    // Confirm the student belongs to this school before doing anything
+    const studentCheck = await client.query(
+      `SELECT id, first_name, last_name FROM students
+       WHERE id = $1 AND school_id = $2`,
+      [studentId, schoolId]
+    );
+
+    if (studentCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({
+        success: false,
+        error: 'Student not found or does not belong to your school.'
+      });
+    }
+
+    const student = studentCheck.rows[0];
+    const studentName = `${student.first_name} ${student.last_name}`.trim();
+
+    // Delete dependent records first to avoid FK constraint violations
+    // (skip any of these that don't apply to your schema)
+    await client.query(`DELETE FROM scores       WHERE student_id = $1`, [studentId]);
+    await client.query(`DELETE FROM reports      WHERE student_id = $1`, [studentId]);
+    await client.query(`DELETE FROM enrollments  WHERE student_id = $1`, [studentId]);
+
+    // Finally delete the student record itself
+    await client.query(
+      `DELETE FROM students WHERE id = $1 AND school_id = $2`,
+      [studentId, schoolId]
+    );
+
+    await client.query('COMMIT');
+
+    console.log(`✅ Student deleted: ${studentName} (id: ${studentId}) by schoolId: ${schoolId}`);
+
+    res.status(200).json({
+      success: true,
+      message: `Student "${studentName}" and all related records have been permanently deleted.`,
+      data: { deletedStudentId: parseInt(studentId) }
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Delete Student Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/students/push-token
+// Call this from the app right after student login
+router.post('/push-token', authMiddleware.authenticateToken, async (req, res) => {
+  const { token, appVersion } = req.body;
+  const studentId = req.user.studentId || req.user.id;
+
+  if (!token || !token.startsWith('ExponentPushToken[')) {
+    return res.status(400).json({ success: false, error: 'Invalid push token' });
+  }
+
+  try {
+    // Ensure table exists (best effort)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS student_push_tokens (
+        student_id INTEGER PRIMARY KEY REFERENCES students(id) ON DELETE CASCADE,
+        expo_token VARCHAR(255) NOT NULL,
+        app_version VARCHAR(50),
+        version_notified_at TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(
+      `INSERT INTO student_push_tokens (student_id, expo_token, app_version, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (student_id) DO UPDATE SET
+         expo_token = EXCLUDED.expo_token,
+         app_version = EXCLUDED.app_version,
+         updated_at = NOW()`,
+      [studentId, token, appVersion || null]
+    );
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Student Push Token Error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

@@ -18,6 +18,9 @@ const studentsRouter = require('./routes/students');
 const ScoresRouter = require('./routes/scores');
 const subjectsRouter = require('./routes/subjects');
 const ReportsRouter = require('./routes/reports')
+const adminNotifications = require('./routes/adminNotifications');
+const cronRouter = require('./routes/cron');
+
 
 const app = express();
 app.set('trust proxy', 1); // Trust first hop (e.g., Vercel, Cloudflare, Nginx)
@@ -86,6 +89,9 @@ app.use('/api/students', studentsRouter);
 app.use('/api/scores', ScoresRouter);
 app.use('/api/subjects', subjectsRouter);
 app.use('/api/reports', ReportsRouter);
+app.use('/api/admin/notifications', adminNotifications);
+app.use('/api/cron', cronRouter);
+
 
 // Public data endpoints (subjects, academic sessions, enrollments)
 // These are mounted at /api level for broader access
