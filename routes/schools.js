@@ -1000,7 +1000,16 @@ router.post('/push-token', authMiddleware.authenticateToken, async (req, res) =>
   const { token, appVersion } = req.body;
   const schoolId = req.user.schoolId || req.user.id;
 
+  // 🔴 ADD THESE LOGS TEMPORARILY FOR TESTING:
+  console.log("========================================");
+  console.log("📱 PUSH TOKEN ROUTE HIT BY PHONE!");
+  // console.log("School ID identified as:", schoolId);
+  console.log("Token Received from phone:", token);
+  console.log("App Version Received:", appVersion);
+  console.log("========================================");
+
   if (!token || !token.startsWith('ExponentPushToken[')) {
+    console.log("❌ REJECTED: Token is invalid format or missing");
     return res.status(400).json({ success: false, error: 'Invalid push token' });
   }
 
