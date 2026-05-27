@@ -76,7 +76,7 @@ router.post('/initiate', authMiddleware.authenticateToken, async (req, res) => {
       'https://api.flutterwave.com/v3/payments',
       {
         tx_ref,
-        amount: 28000, // $20 USD
+        amount: 30000, // $20 USD
         currency: 'NGN',
         is_permanent: false,
         redirect_url: `${process.env.APP_BASE_URL}/api/payments/flw-callback`,
