@@ -1434,4 +1434,153 @@ router.get('/preview/student-grades/:enrollmentId', async (req, res) => {
   }
 });
 
+
+
+
+/**
+ * @route   GET /api/reports/pdf/:enrollmentId
+ * @desc    Download report card as raw PDF file
+ * @query   term, sessionId
+ */
+router.get('/pdf/:enrollmentId', checkSubscription, async (req, res) => {
+  try {
+    const { enrollmentId } = req.params;
+    const { term, sessionId } = req.query;
+    const schoolId = req.user?.schoolId;
+
+    const termInt = parseInt(term, 10);
+    const sessionIdInt = parseInt(sessionId, 10);
+
+    if (!termInt || !sessionIdInt) {
+      return res.status(400).json({ success: false, error: 'term and sessionId required' });
+    }
+
+    // Reuse same data query as email route
+    const dataQuery = `
+      SELECT 
+        s.first_name, s.last_name, 
+        s.registration_number as admission_number,
+        s.photo as photo_url,
+        sch.name as school_name,
+        pref.logo_url, pref.stamp_url, pref.theme_color, pref.header_text,
+        c.display_name as class_name,
+        COALESCE(sub.subject_name, 'Unknown Subject') as subject_name,
+        COALESCE(sc.ca1_score, 0) as ca1_score,
+        COALESCE(sc.ca2_score, 0) as ca2_score,
+        COALESCE(sc.ca3_score, 0) as ca3_score,
+        COALESCE(sc.ca4_score, 0) as ca4_score,
+        COALESCE(sc.exam_score, 0) as exam_score,
+        COALESCE(sc.total_score, 0) as total_score,
+        COALESCE(ay.session_name, '') as session_name
+      FROM enrollments e
+      JOIN students s ON e.student_id = s.id
+      JOIN schools sch ON s.school_id = sch.id
+      LEFT JOIN school_preferences pref ON pref.school_id = sch.id
+      LEFT JOIN global_class_templates c ON e.class_id = c.id
+      LEFT JOIN scores sc ON sc.enrollment_id = e.id AND sc.term = $3 AND sc.session_id = $4
+      LEFT JOIN global_subjects sub ON sc.subject_id = sub.id
+      LEFT JOIN academic_years ay ON sc.session_id = ay.id
+      WHERE e.id = $1 AND e.school_id = $2 AND sc.id IS NOT NULL
+      ORDER BY sub.subject_name ASC
+    `;
+
+    const result = await pool.query(dataQuery, [enrollmentId, schoolId, termInt, sessionIdInt]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'No report data found' });
+    }
+
+    const data = result.rows;
+    const pref = data[0];
+
+    // Get AI remark
+    let aiRemark = "The student continues to show steady progress in their academic pursuits.";
+    try {
+      const existingRemark = await pool.query(
+        `SELECT ai_remark FROM report_remarks WHERE enrollment_id = $1 AND term = $2 AND session_id = $3`,
+        [enrollmentId, termInt, sessionIdInt]
+      );
+      if (existingRemark.rows.length > 0) aiRemark = existingRemark.rows[0].ai_remark;
+    } catch (err) { }
+
+    // Stream PDF directly to response
+    const studentName = `${pref.first_name}_${pref.last_name}`.replace(/\s+/g, '_');
+    const filename = `${studentName}_Term${termInt}_Report.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    const doc = new PDFDocument({ autoFirstPage: false, size: 'A4' });
+    doc.pipe(res); // stream directly — no buffering needed
+    doc.addPage();
+
+    let themeColor = '#2563EB';
+    if (pref.theme_color && pref.theme_color.trim()) themeColor = pref.theme_color.trim();
+
+    // Same PDF layout as email route
+    doc.fillColor('#ffffff').rect(0, 0, 595, 60).fill();
+    doc.fillColor(themeColor).rect(0, 55, 595, 5).fill();
+    doc.fontSize(22).fillColor('#1a1a1a').font('Helvetica-Bold').text(pref.school_name || 'School', 50, 18);
+    doc.fontSize(9).fillColor('#666').font('Helvetica').text(pref.header_text || '', 50, 42);
+    await tryLoadImage(doc, pref.logo_url, 503, 12, 44, 36, 'LOGO');
+
+    doc.fontSize(14).fillColor(themeColor).font('Helvetica-Bold').text(`${pref.first_name} ${pref.last_name}`, 50, 80);
+    doc.fontSize(10).fillColor('#555').font('Helvetica').text(`Class: ${pref.class_name}`, 50, 100);
+    doc.fontSize(10).text(`Term ${termInt} • ${pref.session_name}`, 50, 115);
+    doc.fontSize(10).fillColor(themeColor).font('Helvetica-Bold').text(`Adm No: ${pref.admission_number || 'N/A'}`, 50, 130);
+
+    // Deduplicate subjects
+    const uniqueSubjects = {};
+    data.forEach(row => { if (!uniqueSubjects[row.subject_name]) uniqueSubjects[row.subject_name] = row; });
+    const deduplicatedData = Object.values(uniqueSubjects);
+
+    // Scores table
+    const tableStartY = 155;
+    const subjectColX = 50, ca1ColX = 160, ca2ColX = 210, ca3ColX = 260;
+    const ca4ColX = 310, examColX = 360, totalColX = 410;
+    const colWidth = 45, tableWidth = 415, rowHeight = 18;
+
+    doc.fillColor(themeColor).rect(subjectColX, tableStartY, tableWidth, 25).fill();
+    doc.fillColor('#fff').fontSize(8).font('Helvetica-Bold');
+    doc.text('Subject', subjectColX + 5, tableStartY + 6, { width: 100 });
+    doc.text('CA1', ca1ColX, tableStartY + 6, { width: colWidth, align: 'center' });
+    doc.text('CA2', ca2ColX, tableStartY + 6, { width: colWidth, align: 'center' });
+    doc.text('CA3', ca3ColX, tableStartY + 6, { width: colWidth, align: 'center' });
+    doc.text('CA4', ca4ColX, tableStartY + 6, { width: colWidth, align: 'center' });
+    doc.text('Exam', examColX, tableStartY + 6, { width: colWidth, align: 'center' });
+    doc.text('Total', totalColX, tableStartY + 6, { width: colWidth, align: 'center' });
+
+    let tableY = tableStartY + 32;
+    doc.font('Helvetica').strokeColor('#ddd').lineWidth(0.5);
+    deduplicatedData.forEach((row, index) => {
+      if (index % 2 === 0) doc.fillColor('#f9f9f9').rect(subjectColX, tableY - 5, tableWidth, rowHeight).fill();
+      doc.fillColor('#000').fontSize(9);
+      doc.text(row.subject_name.substring(0, 15), subjectColX + 5, tableY - 3);
+      doc.text(String(row.ca1_score), ca1ColX, tableY - 3, { width: colWidth, align: 'center' });
+      doc.text(String(row.ca2_score), ca2ColX, tableY - 3, { width: colWidth, align: 'center' });
+      doc.text(String(row.ca3_score), ca3ColX, tableY - 3, { width: colWidth, align: 'center' });
+      doc.text(String(row.ca4_score), ca4ColX, tableY - 3, { width: colWidth, align: 'center' });
+      doc.text(String(row.exam_score), examColX, tableY - 3, { width: colWidth, align: 'center' });
+      doc.text(String(row.total_score), totalColX, tableY - 3, { width: colWidth, align: 'center' });
+      tableY += rowHeight;
+    });
+
+    // AI remark
+    doc.fontSize(10).fillColor('#333').font('Helvetica-Bold').text("Principal's Comment:", 50, tableY + 20);
+    doc.fontSize(9).fillColor('#555').font('Helvetica').text(aiRemark, 50, tableY + 40, { width: 450 });
+
+    // Footer
+    doc.strokeColor(themeColor).lineWidth(2).moveTo(50, tableY + 110).lineTo(550, tableY + 110).stroke();
+    doc.fontSize(8).fillColor('#888').text(`Generated: ${new Date().toLocaleDateString()}`, 50, tableY + 120, { align: 'center', width: 500 });
+
+    doc.end();
+
+  } catch (error) {
+    console.error('❌ PDF Download Error:', error.message);
+    if (!res.writableEnded) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+});
+
 module.exports = router;
