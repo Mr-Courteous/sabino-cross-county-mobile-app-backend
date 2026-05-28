@@ -178,8 +178,8 @@ router.post('/otp', otpLimiter, async (req, res) => {
 
     if (existingSchool.rows.length > 0) {
       const school = existingSchool.rows[0];
-      return res.status(200).json({
-        success: true,
+      return res.status(400).json({
+        success: false,
         alreadyRegistered: true,
         resumePayment: school.payment_status === 'pending',
         message: school.payment_status === 'completed'
