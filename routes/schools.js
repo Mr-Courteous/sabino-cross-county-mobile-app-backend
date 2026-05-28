@@ -994,38 +994,29 @@ router.delete('/:schoolId', authMiddleware.authenticateToken, authMiddleware.req
   }
 });
 
-// POST /api/schools/push-token
-// Call this from the app right after login
+// Called after login — doesn't create a new row, just links school identity
 router.post('/push-token', authMiddleware.authenticateToken, async (req, res) => {
   const { token, appVersion } = req.body;
   const schoolId = req.user.schoolId || req.user.id;
 
-  // 🔴 ADD THESE LOGS TEMPORARILY FOR TESTING:
-  console.log("========================================");
-  console.log("📱 PUSH TOKEN ROUTE HIT BY PHONE!");
-  // console.log("School ID identified as:", schoolId);
-  console.log("Token Received from phone:", token);
-  console.log("App Version Received:", appVersion);
-  console.log("========================================");
-
   if (!token || !token.startsWith('ExponentPushToken[')) {
-    console.log("❌ REJECTED: Token is invalid format or missing");
     return res.status(400).json({ success: false, error: 'Invalid push token' });
   }
 
   try {
     await pool.query(
-      `INSERT INTO push_tokens (school_id, expo_token, app_version, updated_at)
+      `INSERT INTO device_tokens (expo_token, app_version, school_id, updated_at)
        VALUES ($1, $2, $3, NOW())
-       ON CONFLICT (school_id) DO UPDATE SET
-         expo_token = EXCLUDED.expo_token,
+       ON CONFLICT (expo_token) DO UPDATE SET
+         school_id = EXCLUDED.school_id,
          app_version = EXCLUDED.app_version,
          updated_at = NOW()`,
-      [schoolId, token, appVersion || null]
+      [token, appVersion || null, schoolId]
     );
+
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

@@ -19,6 +19,7 @@ const ScoresRouter = require('./routes/scores');
 const subjectsRouter = require('./routes/subjects');
 const ReportsRouter = require('./routes/reports')
 const adminNotifications = require('./routes/adminNotifications');
+const publicNotifications = require('./routes/publicNotifications');
 const cronRouter = require('./routes/cron');
 
 
@@ -90,6 +91,7 @@ app.use('/api/scores', ScoresRouter);
 app.use('/api/subjects', subjectsRouter);
 app.use('/api/reports', ReportsRouter);
 app.use('/api/admin/notifications', adminNotifications);
+app.use('/api/notifications', publicNotifications);
 app.use('/api/cron', cronRouter);
 
 
