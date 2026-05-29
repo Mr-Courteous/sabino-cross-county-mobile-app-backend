@@ -1449,145 +1449,88 @@ router.get('/pdf/:enrollmentId', checkSubscription, async (req, res) => {
       return res.status(400).json({ success: false, error: 'term and sessionId required' });
     }
 
-    // ── DIAGNOSTIC: log the full token payload so we know what fields exist ──
-    console.log('[PDF] req.user payload:', JSON.stringify(req.user, null, 2));
-    console.log('[PDF] enrollmentId:', enrollmentId, '| term:', termInt, '| sessionId:', sessionIdInt);
-
-    // Support both camelCase and snake_case field names from JWT
     const schoolId = req.user?.schoolId || req.user?.school_id || null;
     const studentId = req.user?.studentId || req.user?.student_id || null;
-    const userType = req.user?.type || req.user?.userType || null;
 
-    console.log('[PDF] resolved schoolId:', schoolId, '| studentId:', studentId, '| type:', userType);
-
-    // ── RESOLVE schoolId for student users ────────────────────────────────
     let resolvedSchoolId = schoolId;
-
     if (!resolvedSchoolId && studentId) {
-      console.log('[PDF] No schoolId on token — resolving from enrollment for student:', studentId);
       const ownerRow = await pool.query(
         'SELECT school_id FROM enrollments WHERE id = $1 AND student_id = $2',
         [enrollmentId, studentId]
       );
       if (ownerRow.rows.length === 0) {
-        console.warn('[PDF] Ownership check failed — enrollment not found for student');
         return res.status(403).json({ success: false, error: 'Unauthorized' });
       }
       resolvedSchoolId = ownerRow.rows[0].school_id;
-      console.log('[PDF] Resolved schoolId from enrollment:', resolvedSchoolId);
     }
 
     if (!resolvedSchoolId) {
-      console.error('[PDF] Could not resolve schoolId — neither token nor enrollment provided it');
-      return res.status(401).json({ success: false, error: 'Authentication context missing. Please login again.' });
+      return res.status(401).json({ success: false, error: 'Authentication context missing.' });
     }
 
-    // ── DATA QUERY ─────────────────────────────────────────────────────────
-    const dataQuery = `
+    // ── Fetch student + school info regardless of whether scores exist ──
+    const studentQuery = `
       SELECT 
-        s.first_name, s.last_name, 
+        s.first_name, s.last_name,
         s.registration_number as admission_number,
         s.photo as photo_url,
         sch.name as school_name,
         pref.logo_url, pref.stamp_url, pref.theme_color, pref.header_text,
         c.display_name as class_name,
-        COALESCE(sub.subject_name, 'Unknown Subject') as subject_name,
-        COALESCE(sc.ca1_score, 0) as ca1_score,
-        COALESCE(sc.ca2_score, 0) as ca2_score,
-        COALESCE(sc.ca3_score, 0) as ca3_score,
-        COALESCE(sc.ca4_score, 0) as ca4_score,
-        COALESCE(sc.exam_score, 0) as exam_score,
-        COALESCE(sc.total_score, 0) as total_score,
         COALESCE(ay.session_name, '') as session_name
       FROM enrollments e
       JOIN students s ON e.student_id = s.id
       JOIN schools sch ON s.school_id = sch.id
       LEFT JOIN school_preferences pref ON pref.school_id = sch.id
       LEFT JOIN global_class_templates c ON e.class_id = c.id
-      LEFT JOIN scores sc ON sc.enrollment_id = e.id AND sc.term = $3 AND sc.session_id = $4
+      LEFT JOIN academic_years ay ON e.session_id = ay.id
+      WHERE e.id = $1 AND e.school_id = $2
+      LIMIT 1
+    `;
+
+    const studentResult = await pool.query(studentQuery, [enrollmentId, resolvedSchoolId]);
+
+    if (studentResult.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Enrollment not found for this school.' });
+    }
+
+    const pref = studentResult.rows[0];
+
+    // ── Fetch scores separately (may be empty) ─────────────────────────
+    const scoresQuery = `
+      SELECT
+        COALESCE(sub.subject_name, 'Unknown Subject') as subject_name,
+        COALESCE(sc.ca1_score, 0) as ca1_score,
+        COALESCE(sc.ca2_score, 0) as ca2_score,
+        COALESCE(sc.ca3_score, 0) as ca3_score,
+        COALESCE(sc.ca4_score, 0) as ca4_score,
+        COALESCE(sc.exam_score, 0) as exam_score,
+        COALESCE(sc.total_score, 0) as total_score
+      FROM scores sc
       LEFT JOIN global_subjects sub ON sc.subject_id = sub.id
-      LEFT JOIN academic_years ay ON sc.session_id = ay.id
-      WHERE e.id = $1 AND e.school_id = $2 AND sc.id IS NOT NULL
+      WHERE sc.enrollment_id = $1 AND sc.term = $2 AND sc.session_id = $3
       ORDER BY sub.subject_name ASC
     `;
 
-    console.log('[PDF] Running data query with params:', [enrollmentId, resolvedSchoolId, termInt, sessionIdInt]);
-    const result = await pool.query(dataQuery, [enrollmentId, resolvedSchoolId, termInt, sessionIdInt]);
-    console.log('[PDF] Query returned', result.rows.length, 'rows');
+    const scoresResult = await pool.query(scoresQuery, [enrollmentId, termInt, sessionIdInt]);
+    const scores = scoresResult.rows;
+    const hasScores = scores.length > 0;
 
-    if (result.rows.length === 0) {
-      // ── DEEP DIAGNOSTICS when 0 rows returned ────────────────────────────
-      console.warn('[PDF] 0 rows — running diagnostics...');
-
-      const enrollCheck = await pool.query(
-        `SELECT e.id, e.student_id, e.class_id, e.school_id, e.session_id, e.status,
-                s.first_name, s.last_name
-         FROM enrollments e
-         JOIN students s ON e.student_id = s.id
-         WHERE e.id = $1`,
-        [enrollmentId]
-      );
-      console.log('[PDF] Enrollment exists (any school)?', enrollCheck.rows);
-
-      if (enrollCheck.rows.length > 0) {
-        const enr = enrollCheck.rows[0];
-        console.log('[PDF] Enrollment school_id:', enr.school_id, '| resolvedSchoolId:', resolvedSchoolId, '| match?', enr.school_id == resolvedSchoolId);
-
-        const scoresCheck = await pool.query(
-          `SELECT id, term, session_id, subject_id,
-                  ca1_score, ca2_score, ca3_score, ca4_score, exam_score
-           FROM scores
-           WHERE enrollment_id = $1
-           ORDER BY term, session_id`,
-          [enrollmentId]
-        );
-        console.log('[PDF] All scores for this enrollment:', scoresCheck.rows);
-        console.log('[PDF] Scores matching term', termInt, 'sessionId', sessionIdInt, ':',
-          scoresCheck.rows.filter(r => r.term == termInt && r.session_id == sessionIdInt)
-        );
-
-        const classCheck = await pool.query(
-          'SELECT id, display_name FROM global_class_templates WHERE id = $1',
-          [enr.class_id]
-        );
-        console.log('[PDF] Class template:', classCheck.rows);
-
-        const prefCheck = await pool.query(
-          'SELECT school_id, logo_url, theme_color FROM school_preferences WHERE school_id = $1',
-          [enr.school_id]
-        );
-        console.log('[PDF] School preferences:', prefCheck.rows);
-      }
-
-      return res.status(404).json({
-        success: false,
-        error: 'No report data found. Check server logs for diagnostics.',
-        debug: {
-          enrollmentId,
-          resolvedSchoolId,
-          termInt,
-          sessionIdInt,
-          hint: 'Check: 1) enrollment belongs to this school, 2) scores exist for this term+session, 3) session_id matches academic_years.id'
-        }
-      });
-    }
-
-    const data = result.rows;
-    const pref = data[0];
-
-    // ── AI REMARK ──────────────────────────────────────────────────────────
+    // ── AI remark (only if scores exist) ───────────────────────────────
     let aiRemark = "The student continues to show steady progress in their academic pursuits.";
-    try {
-      const existingRemark = await pool.query(
-        `SELECT ai_remark FROM report_remarks WHERE enrollment_id = $1 AND term = $2 AND session_id = $3`,
-        [enrollmentId, termInt, sessionIdInt]
-      );
-      if (existingRemark.rows.length > 0) aiRemark = existingRemark.rows[0].ai_remark;
-    } catch (err) {
-      console.warn('[PDF] Could not fetch AI remark:', err.message);
+    if (hasScores) {
+      try {
+        const existingRemark = await pool.query(
+          `SELECT ai_remark FROM report_remarks WHERE enrollment_id = $1 AND term = $2 AND session_id = $3`,
+          [enrollmentId, termInt, sessionIdInt]
+        );
+        if (existingRemark.rows.length > 0) aiRemark = existingRemark.rows[0].ai_remark;
+      } catch (err) {
+        console.warn('[PDF] Could not fetch AI remark:', err.message);
+      }
     }
 
-    // ── STREAM PDF ─────────────────────────────────────────────────────────
+    // ── Stream PDF ──────────────────────────────────────────────────────
     const studentName = `${pref.first_name}_${pref.last_name}`.replace(/\s+/g, '_');
     const filename = `${studentName}_Term${termInt}_Report.pdf`;
 
@@ -1603,7 +1546,7 @@ router.get('/pdf/:enrollmentId', checkSubscription, async (req, res) => {
       themeColor = pref.theme_color.trim();
     }
 
-    // ── HEADER (identical to email route) ─────────────────────────────────
+    // ── HEADER ──────────────────────────────────────────────────────────
     doc.fillColor('#ffffff').rect(0, 0, 595, 60).fill();
     doc.fillColor(themeColor).rect(0, 55, 595, 5).fill();
     doc.fontSize(22).fillColor('#1a1a1a').font('Helvetica-Bold')
@@ -1615,7 +1558,7 @@ router.get('/pdf/:enrollmentId', checkSubscription, async (req, res) => {
     await tryLoadImage(doc, pref.logo_url, 503, 12, 44, 36, 'LOGO');
     doc.fillColor('#000000');
 
-    // ── STUDENT INFO (identical to email route) ────────────────────────────
+    // ── STUDENT INFO ────────────────────────────────────────────────────
     const infoY = 75;
     doc.fillColor('#f0f0f0').rect(50, infoY, 55, 55).fill();
     doc.strokeColor(themeColor).lineWidth(2).rect(50, infoY, 55, 55).stroke();
@@ -1634,53 +1577,72 @@ router.get('/pdf/:enrollmentId', checkSubscription, async (req, res) => {
       .text(`Adm No: ${pref.admission_number || 'N/A'}`, 115, infoY + 54);
     doc.fillColor('#000000');
 
-    // ── SCORES TABLE (identical to email route) ────────────────────────────
-    const uniqueSubjects = {};
-    data.forEach(row => {
-      if (!uniqueSubjects[row.subject_name]) uniqueSubjects[row.subject_name] = row;
-    });
-    const deduplicatedData = Object.values(uniqueSubjects);
-
+    // ── SCORES TABLE ────────────────────────────────────────────────────
     let tableY = 150;
     const leftX = 50;
     const tableW = 500;
 
+    // Deduplicate subjects
+    const uniqueSubjects = {};
+    scores.forEach(row => {
+      if (!uniqueSubjects[row.subject_name]) uniqueSubjects[row.subject_name] = row;
+    });
+    const deduplicatedData = Object.values(uniqueSubjects);
+
+    // Table header
     doc.fillColor(themeColor).rect(leftX, tableY, tableW, 20).fill();
     doc.fillColor('#ffffff').fontSize(10).font('Helvetica-Bold');
     doc.text('SUBJECT', leftX + 10, tableY + 5, { width: 200 });
     doc.text('C.A.', leftX + 220, tableY + 5, { width: 60, align: 'center' });
     doc.text('EXAM', leftX + 310, tableY + 5, { width: 60, align: 'center' });
     doc.text('TOTAL', leftX + 410, tableY + 5, { width: 80, align: 'center' });
-
     tableY += 20;
-    doc.fontSize(10);
 
-    deduplicatedData.forEach((row, i) => {
-      doc.fillColor(i % 2 === 0 ? '#fff' : '#f5f5f5').rect(leftX, tableY, tableW, 18).fill();
-      const ca = Math.round(
-        Number(row.ca1_score || 0) + Number(row.ca2_score || 0) +
-        Number(row.ca3_score || 0) + Number(row.ca4_score || 0)
-      );
-      const exam = Math.round(Number(row.exam_score || 0));
-      const total = ca + exam;
-      doc.fillColor('#222').font('Helvetica')
-        .text(row.subject_name || '-', leftX + 10, tableY + 4, { width: 200 });
-      doc.text(String(ca), leftX + 220, tableY + 4, { width: 60, align: 'center' });
-      doc.text(String(exam), leftX + 310, tableY + 4, { width: 60, align: 'center' });
-      doc.font('Helvetica-Bold')
-        .text(String(total), leftX + 410, tableY + 4, { width: 80, align: 'center' });
-      doc.strokeColor('#ddd').lineWidth(0.5)
-        .moveTo(leftX, tableY + 18).lineTo(leftX + tableW, tableY + 18).stroke();
-      doc.fillColor('#000').font('Helvetica');
-      tableY += 18;
-    });
+    if (!hasScores) {
+      // ── No scores: show a friendly notice inside the table ────────────
+      doc.fillColor('#fafafa').rect(leftX, tableY, tableW, 60).fill();
+      doc.strokeColor('#e5e7eb').lineWidth(0.5)
+        .rect(leftX, tableY, tableW, 60).stroke();
+      doc.fontSize(11).fillColor('#9ca3af').font('Helvetica')
+        .text('No scores recorded for this term and session.', leftX, tableY + 22, {
+          width: tableW,
+          align: 'center'
+        });
+      tableY += 60;
+    } else {
+      // ── Render score rows ─────────────────────────────────────────────
+      doc.fontSize(10);
+      deduplicatedData.forEach((row, i) => {
+        doc.fillColor(i % 2 === 0 ? '#fff' : '#f5f5f5')
+          .rect(leftX, tableY, tableW, 18).fill();
+        const ca = Math.round(
+          Number(row.ca1_score || 0) + Number(row.ca2_score || 0) +
+          Number(row.ca3_score || 0) + Number(row.ca4_score || 0)
+        );
+        const exam = Math.round(Number(row.exam_score || 0));
+        const total = ca + exam;
+        doc.fillColor('#222').font('Helvetica')
+          .text(row.subject_name || '-', leftX + 10, tableY + 4, { width: 200 });
+        doc.text(String(ca), leftX + 220, tableY + 4, { width: 60, align: 'center' });
+        doc.text(String(exam), leftX + 310, tableY + 4, { width: 60, align: 'center' });
+        doc.font('Helvetica-Bold')
+          .text(String(total), leftX + 410, tableY + 4, { width: 80, align: 'center' });
+        doc.strokeColor('#ddd').lineWidth(0.5)
+          .moveTo(leftX, tableY + 18).lineTo(leftX + tableW, tableY + 18).stroke();
+        doc.fillColor('#000').font('Helvetica');
+        tableY += 18;
+      });
+    }
 
     doc.strokeColor(themeColor).lineWidth(1).rect(leftX, 150, tableW, tableY - 150).stroke();
     doc.fillColor('#000');
 
-    // ── PRINCIPAL'S COMMENT (identical to email route) ─────────────────────
+    // ── PRINCIPAL'S COMMENT ─────────────────────────────────────────────
     const remarkY = tableY + 15;
-    const remarkText = (aiRemark && aiRemark.trim()) ? aiRemark : 'Keep up the good work.';
+    const remarkText = hasScores
+      ? ((aiRemark && aiRemark.trim()) ? aiRemark : 'Keep up the good work.')
+      : 'No academic scores have been recorded for this student in the selected term.';
+
     doc.fillColor('#f9f9f9').rect(50, remarkY, 500, 50).fill();
     doc.strokeColor(themeColor).lineWidth(1).rect(50, remarkY, 500, 50).stroke();
     doc.fontSize(10).fillColor(themeColor).font('Helvetica-Bold')
@@ -1689,7 +1651,7 @@ router.get('/pdf/:enrollmentId', checkSubscription, async (req, res) => {
       .text(remarkText, 60, remarkY + 20, { width: 420 });
     await tryLoadImage(doc, pref.stamp_url, 510, remarkY + 5, 35, 35, 'STAMP');
 
-    // ── FOOTER (identical to email route) ──────────────────────────────────
+    // ── FOOTER ──────────────────────────────────────────────────────────
     const footerY = tableY + 70;
     doc.strokeColor(themeColor).lineWidth(2)
       .moveTo(50, footerY).lineTo(550, footerY).stroke();
@@ -1699,7 +1661,6 @@ router.get('/pdf/:enrollmentId', checkSubscription, async (req, res) => {
       .text('School Management System', 50, footerY + 20, { align: 'center', width: 500 });
 
     doc.end();
-    console.log('[PDF] PDF streamed successfully for enrollment:', enrollmentId);
 
   } catch (error) {
     console.error('[PDF] Route error:', error.message, error.stack);
