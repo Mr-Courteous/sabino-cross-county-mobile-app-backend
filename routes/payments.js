@@ -1,21 +1,9 @@
-/**
- * payments.js — Flutterwave web checkout routes
- *
- * Mount in your main app: app.use('/api/payments', require('./payments'));
- *
- * Add these to your EXISTING backend .env file (same one that has JWT_SECRET etc):
- *   FLW_SECRET_KEY=sk_live_xxxxxxxxxxxx        ← from Flutterwave dashboard
- *   FLW_WEBHOOK_SECRET=any_string_you_choose   ← you pick it, paste same in Flutterwave dashboard
- *
- * Everything else already exists in your .env (JWT_SECRET, EMAIL_USER, etc.)
- */
-
 const express = require('express');
 const router = express.Router();
-const pool = require('../database/db');       // same db you use in schools.js
+const pool = require('../database/db');
 const axios = require('axios');
 const crypto = require('crypto');
-const authMiddleware = require('../middleware/auth'); // same auth middleware
+const authMiddleware = require('../middleware/auth');
 const nodemailer = require('nodemailer');
 
 require('dotenv').config();
@@ -23,7 +11,10 @@ require('dotenv').config();
 const FLW_SECRET_KEY = process.env.FLW_SECRET_KEY;
 const FLW_WEBHOOK_SECRET = process.env.FLW_WEBHOOK_SECRET;
 
-// Reuse your existing email transporter from schools.js
+const PLAN_AMOUNT = 30000;
+const PLAN_CURRENCY = 'NGN';
+const PLAN_MONTHS = 4;
+
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -32,35 +23,26 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// ─── Helper: activate subscription ───────────────────────────────────────────
-// Mirrors EXACTLY what your RevenueCat webhook does on line 681 of schools.js:
-//   UPDATE schools SET payment_status = 'completed', subscription_expiry = $2 WHERE id = $3
-// No new columns. No new tables.
 async function activateSubscription(schoolId, txRef) {
-  const fourMonthsLater = new Date();
-  fourMonthsLater.setMonth(fourMonthsLater.getMonth() + 4);
-  const expiry = fourMonthsLater.toISOString();
+  const expiry = new Date();
+  expiry.setMonth(expiry.getMonth() + PLAN_MONTHS);
+  const expiryISO = expiry.toISOString();
 
   await pool.query(
     'UPDATE schools SET payment_status = $1, subscription_expiry = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
-    ['completed', expiry, schoolId]
+    ['completed', expiryISO, schoolId]
   );
 
-  console.log(`✅ [Flutterwave] School ${schoolId} activated via web checkout. Expires: ${expiry}`);
-  return expiry;
+  console.log(`✅ [Flutterwave] School ${schoolId} activated. tx_ref: ${txRef}. Expires: ${expiryISO}`);
+  return expiryISO;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// POST /api/payments/initiate
-// App calls this when user taps "PAY VIA WEB CHECKOUT"
-// Returns: { link, tx_ref }
-// ════════════════════════════════════════════════════════════════════════════
+// ── POST /api/payments/initiate ───────────────────────────────────────────────
 router.post('/initiate', authMiddleware.authenticateToken, async (req, res) => {
   try {
-    const schoolId = req.user?.id;
+    const schoolId = req.user?.schoolId || req.user?.id;
     if (!schoolId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
-    // Fetch school details for prefilling Flutterwave checkout
     const result = await pool.query(
       'SELECT id, name, email FROM schools WHERE id = $1',
       [schoolId]
@@ -68,16 +50,14 @@ router.post('/initiate', authMiddleware.authenticateToken, async (req, res) => {
     const school = result.rows[0];
     if (!school) return res.status(404).json({ success: false, message: 'School not found' });
 
-    // Unique reference for this payment attempt
     const tx_ref = `SAB-${schoolId}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
 
-    // Create Flutterwave payment link
     const flwResponse = await axios.post(
       'https://api.flutterwave.com/v3/payments',
       {
         tx_ref,
-        amount: 30000, // $20 USD
-        currency: 'NGN',
+        amount: PLAN_AMOUNT,
+        currency: PLAN_CURRENCY,
         is_permanent: false,
         redirect_url: `${process.env.APP_BASE_URL}/api/payments/flw-callback`,
         customer: {
@@ -85,14 +65,14 @@ router.post('/initiate', authMiddleware.authenticateToken, async (req, res) => {
           name: school.name,
         },
         customizations: {
-          title: 'Sabino Edu Subscription',
-          description: 'School Premium Plan — 4 Months Access',
+          title: 'Sabino Edu — School Billing Portal',
+          description: 'Institutional School Plan — 4 Months Access',
+          logo: 'https://your-logo-url.com/logo.png', // add your logo URL
         },
         meta: {
-          school_id: schoolId, // stored in Flutterwave so we can recover it in webhook
+          school_id: schoolId,
           tx_ref,
         },
-        // All African payment methods enabled
         payment_options: 'card,banktransfer,ussd,mobilemoney,opay,palmpay',
       },
       {
@@ -104,16 +84,9 @@ router.post('/initiate', authMiddleware.authenticateToken, async (req, res) => {
     );
 
     const { link } = flwResponse.data.data;
-    console.log('[FLW PAYLOAD]', JSON.stringify(flwResponse.config?.data, null, 2));
-    console.log('[FLW RESPONSE]', JSON.stringify(flwResponse.data, null, 2));
-    console.log('[FLW LINK]', link);
     console.log(`🔗 [Flutterwave] Payment link created for school ${schoolId}. tx_ref: ${tx_ref}`);
 
-    return res.status(200).json({
-      success: true,
-      link,     // app opens this in the browser
-      tx_ref,   // app stores this and sends it back during verify
-    });
+    return res.status(200).json({ success: true, link, tx_ref });
 
   } catch (err) {
     console.error('[payments/initiate] Error:', err?.response?.data || err.message);
@@ -124,15 +97,10 @@ router.post('/initiate', authMiddleware.authenticateToken, async (req, res) => {
   }
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-// POST /api/payments/verify
-// App calls this when user taps "I'VE COMPLETED PAYMENT" after returning from browser
-// Body: { tx_ref }
-// Returns: { success, message }
-// ════════════════════════════════════════════════════════════════════════════
+// ── POST /api/payments/verify ─────────────────────────────────────────────────
 router.post('/verify', authMiddleware.authenticateToken, async (req, res) => {
   try {
-    const schoolId = req.user?.id;
+    const schoolId = req.user?.schoolId || req.user?.id;
     if (!schoolId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
     const { tx_ref, transaction_id } = req.body;
@@ -140,38 +108,43 @@ router.post('/verify', authMiddleware.authenticateToken, async (req, res) => {
       return res.status(400).json({ success: false, message: 'tx_ref is required' });
     }
 
-    // Check if already activated (handles double-taps gracefully)
+    // Check already active
     const schoolResult = await pool.query(
       'SELECT payment_status, subscription_expiry FROM schools WHERE id = $1',
       [schoolId]
     );
     const school = schoolResult.rows[0];
-
     if (school?.payment_status === 'completed' && school?.subscription_expiry) {
-      const expiry = new Date(school.subscription_expiry);
-      if (expiry > new Date()) {
-        // Already active — just return success so app can proceed to dashboard
+      if (new Date(school.subscription_expiry) > new Date()) {
         return res.status(200).json({ success: true, message: 'Subscription already active' });
       }
     }
 
-    // Ask Flutterwave to confirm the payment
+    // Verify with Flutterwave
     let flwTx;
-    if (tx_ref) {
-      const flwRes = await axios.get(
-        `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${tx_ref}`,
-        { headers: { Authorization: `Bearer ${FLW_SECRET_KEY}` } }
-      );
-      flwTx = flwRes.data.data;
-    } else {
-      const flwRes = await axios.get(
-        `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`,
-        { headers: { Authorization: `Bearer ${FLW_SECRET_KEY}` } }
-      );
-      flwTx = flwRes.data.data;
+    try {
+      if (tx_ref) {
+        const flwRes = await axios.get(
+          `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${tx_ref}`,
+          { headers: { Authorization: `Bearer ${FLW_SECRET_KEY}` } }
+        );
+        flwTx = flwRes.data.data;
+      } else {
+        const flwRes = await axios.get(
+          `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`,
+          { headers: { Authorization: `Bearer ${FLW_SECRET_KEY}` } }
+        );
+        flwTx = flwRes.data.data;
+      }
+    } catch (flwErr) {
+      console.error('[payments/verify] Flutterwave API error:', flwErr?.response?.data || flwErr.message);
+      return res.status(502).json({
+        success: false,
+        message: 'Could not reach payment provider. Please try again in a moment.',
+      });
     }
 
-    // Validate: must be successful, correct amount and currency
+    // Status check
     if (flwTx.status !== 'successful') {
       return res.status(402).json({
         success: false,
@@ -181,38 +154,48 @@ router.post('/verify', authMiddleware.authenticateToken, async (req, res) => {
       });
     }
 
+    // Amount check — prevent underpayment attacks
+    if (flwTx.amount < PLAN_AMOUNT - 1 || flwTx.currency !== PLAN_CURRENCY) {
+      console.warn(`[payments/verify] Amount mismatch: ${flwTx.amount} ${flwTx.currency} for school ${schoolId}`);
+      return res.status(400).json({
+        success: false,
+        message: 'Payment amount does not match the subscription price. Please contact support.',
+      });
+    }
 
+    // Ownership check — prevent one school verifying another's payment
+    const metaSchoolId = flwTx.meta?.school_id;
+    if (metaSchoolId && String(metaSchoolId) !== String(schoolId)) {
+      console.warn(`[payments/verify] School ${schoolId} tried to claim tx_ref of school ${metaSchoolId}`);
+      return res.status(403).json({
+        success: false,
+        message: 'Transaction does not belong to this account.',
+      });
+    }
 
-    // ✅ All good — activate subscription (same as RevenueCat webhook)
     const expiry = await activateSubscription(schoolId, tx_ref);
 
     return res.status(200).json({
       success: true,
       message: 'Subscription activated successfully',
-      data: { expiry }
+      data: { expiry },
     });
 
   } catch (err) {
     console.error('[payments/verify] Error:', err?.response?.data || err.message);
     return res.status(500).json({
       success: false,
-      message: err?.response?.data?.message || 'Verification failed. Please try again.',
+      message: 'Verification failed. Please try again.',
     });
   }
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-// GET /api/payments/flw-callback
-// Flutterwave redirects the USER'S BROWSER here after checkout.
-// This is your server-side safety net — fires even if user never taps
-// "I'VE COMPLETED PAYMENT" in the app.
-// ════════════════════════════════════════════════════════════════════════════
+// ── GET /api/payments/flw-callback ───────────────────────────────────────────
 router.get('/flw-callback', async (req, res) => {
-  const { tx_ref, transaction_id, status } = req.query;
+  const { tx_ref, status } = req.query;
 
   try {
     if (status === 'successful' && tx_ref) {
-      // Verify with Flutterwave before activating
       const flwRes = await axios.get(
         `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${tx_ref}`,
         { headers: { Authorization: `Bearer ${FLW_SECRET_KEY}` } }
@@ -220,48 +203,63 @@ router.get('/flw-callback', async (req, res) => {
       const flwTx = flwRes.data.data;
 
       if (flwTx.status === 'successful') {
-        // Recover school_id from the meta we stored during /initiate
         const schoolId = flwTx.meta?.school_id;
         if (schoolId) {
-          await activateSubscription(schoolId, tx_ref);
+          // Idempotency check before activating
+          const existing = await pool.query(
+            'SELECT payment_status, subscription_expiry FROM schools WHERE id = $1',
+            [schoolId]
+          );
+          const s = existing.rows[0];
+          const alreadyActive = s?.payment_status === 'completed' &&
+            s?.subscription_expiry &&
+            new Date(s.subscription_expiry) > new Date();
+
+          if (!alreadyActive) {
+            await activateSubscription(schoolId, tx_ref);
+          }
         }
       }
     }
   } catch (err) {
-    // Non-fatal — the app's /verify endpoint is the primary path
     console.error('[flw-callback] Error:', err.message);
   }
 
-  // Send user back to the app — they'll tap "I'VE COMPLETED PAYMENT"
-  // Replace with your actual web domain or a simple HTML page
+  // Branded return page
   res.send(`
+    <!DOCTYPE html>
     <html>
-      <body style="font-family:sans-serif;text-align:center;padding:60px;background:#0F172A;color:#fff">
-        <h2 style="color:#FACC15">Payment Received!</h2>
-        <p style="color:#94A3B8">Please return to the Sabino Edu app and tap <strong>"I've Completed Payment"</strong> to activate your subscription.</p>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Sabino Edu — Payment Received</title>
+      </head>
+      <body style="font-family:sans-serif;text-align:center;padding:60px 20px;background:#0F172A;color:#fff;min-height:100vh">
+        <div style="max-width:400px;margin:auto">
+          <div style="font-size:48px;margin-bottom:16px">✅</div>
+          <h2 style="color:#FACC15;margin-bottom:12px">Payment Received!</h2>
+          <p style="color:#94A3B8;line-height:1.6">
+            Please return to the <strong style="color:#fff">Sabino Edu app</strong> and tap 
+            <strong style="color:#FACC15">"Confirm Institutional Payment"</strong> 
+            to activate your school account.
+          </p>
+          <p style="color:#475569;font-size:12px;margin-top:32px">
+            If you have any issues, contact us at support@sabinoEdu.com
+          </p>
+        </div>
       </body>
     </html>
   `);
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-// POST /api/payments/flw-webhook
-// Flutterwave calls this automatically on the server when payment completes.
-// This is your ultimate backstop — fires even if the app is closed.
-//
-// Setup: Go to Flutterwave Dashboard → Settings → Webhooks
-//   URL: https://your-backend.com/api/payments/flw-webhook
-//   Secret Hash: paste the same value as FLW_WEBHOOK_SECRET in your .env
-// ════════════════════════════════════════════════════════════════════════════
+// ── POST /api/payments/flw-webhook ────────────────────────────────────────────
 router.post('/flw-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  // Verify the webhook is genuinely from Flutterwave
   const signature = req.headers['verif-hash'];
   if (!FLW_WEBHOOK_SECRET || signature !== FLW_WEBHOOK_SECRET) {
     console.warn('[flw-webhook] Invalid signature — rejected');
     return res.status(401).send('Unauthorized');
   }
 
-  // Always respond 200 immediately — Flutterwave expects a fast response
+  // Respond immediately — Flutterwave needs a fast 200
   res.status(200).send('OK');
 
   try {
@@ -273,53 +271,60 @@ router.post('/flw-webhook', express.raw({ type: 'application/json' }), async (re
     const schoolId = flwTx.meta?.school_id;
 
     if (status !== 'successful') return;
-    if (!schoolId) {
-      console.warn(`[flw-webhook] No school_id in meta for tx_ref ${tx_ref}`);
+
+    // Amount validation
+    if (amount < PLAN_AMOUNT - 1 || currency !== PLAN_CURRENCY) {
+      console.warn(`[flw-webhook] Amount mismatch: ${amount} ${currency}. tx_ref: ${tx_ref}`);
       return;
     }
 
-    // Validate amount and currency
+    if (!schoolId) {
+      console.warn(`[flw-webhook] No school_id in meta for tx_ref: ${tx_ref}`);
+      return;
+    }
 
-
-    // Check not already activated
+    // Idempotency check
     const schoolResult = await pool.query(
       'SELECT payment_status, subscription_expiry FROM schools WHERE id = $1',
       [schoolId]
     );
     const school = schoolResult.rows[0];
     if (school?.payment_status === 'completed' && school?.subscription_expiry) {
-      const expiry = new Date(school.subscription_expiry);
-      if (expiry > new Date()) {
+      if (new Date(school.subscription_expiry) > new Date()) {
         console.log(`[flw-webhook] School ${schoolId} already active. Skipping.`);
         return;
       }
     }
 
-    // ✅ Activate subscription
     await activateSubscription(schoolId, tx_ref);
 
-    // Send confirmation email (mirrors your RevenueCat expiry email style)
+    // Confirmation email
     try {
-      const schoolData = await pool.query('SELECT email, name FROM schools WHERE id = $1', [schoolId]);
+      const schoolData = await pool.query(
+        'SELECT email, name FROM schools WHERE id = $1',
+        [schoolId]
+      );
       const s = schoolData.rows[0];
       if (s?.email) {
         await transporter.sendMail({
           from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
           to: s.email,
-          subject: 'Your Sabino Edu Subscription is Active',
+          subject: '✅ Your Sabino Edu School Subscription is Active',
           html: `
-            <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-              <h2 style="color: #2563EB;">Subscription Activated</h2>
+            <div style="font-family:sans-serif;max-width:600px;margin:auto;padding:32px;border:1px solid #eee;border-radius:12px">
+              <h2 style="color:#2563EB">Subscription Activated</h2>
               <p>Hello <strong>${s.name}</strong>,</p>
-              <p>Your Sabino Edu subscription has been successfully activated. You now have full access for the next 4 months.</p>
-              <p>Thank you for your payment!</p>
-              <p>Best regards,<br/>Sabino Edu Team</p>
+              <p>Your Sabino Edu institutional subscription has been successfully activated. 
+                 You now have full access for the next <strong>4 months</strong>.</p>
+              <p style="color:#64748B;font-size:13px">Transaction reference: ${tx_ref}</p>
+              <p>Thank you for choosing Sabino Edu!</p>
+              <p>Best regards,<br/>The Sabino Edu Team</p>
             </div>
-          `
+          `,
         });
       }
     } catch (emailErr) {
-      console.error('[flw-webhook] Failed to send confirmation email:', emailErr);
+      console.error('[flw-webhook] Email error:', emailErr.message);
     }
 
   } catch (err) {
