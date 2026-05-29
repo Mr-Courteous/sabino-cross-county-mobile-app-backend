@@ -67,7 +67,7 @@ router.post('/initiate', authMiddleware.authenticateToken, async (req, res) => {
         customizations: {
           title: 'Sabino Edu — School Billing Portal',
           description: 'Institutional School Plan — 4 Months Access',
-          logo: 'https://your-logo-url.com/logo.png', // add your logo URL
+          logo: 'https://www.image2url.com/r2/default/images/1780017119712-5f16f9fd-dc3a-4399-be26-74ae371c2e9b.jpeg', // add your logo URL
         },
         meta: {
           school_id: schoolId,
