@@ -31,7 +31,7 @@ app.set('trust proxy', 1); // Trust first hop (e.g., Vercel, Cloudflare, Nginx)
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-secret'],
 }));
 
 app.use(express.json());
