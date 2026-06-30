@@ -974,6 +974,114 @@ router.put('/:schoolId', authMiddleware.authenticateToken, authMiddleware.requir
   }
 });
 
+/**
+ * @route   DELETE /api/schools/delete-account
+ * @desc    Permanently delete a school account via email + password (web form flow)
+ * @access  Public — no token required, identity verified via email + password
+ */
+router.delete('/delete-account', async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email and password are required.'
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const schoolResult = await pool.query(
+      'SELECT id, email, name, password FROM schools WHERE LOWER(email) = $1',
+      [normalizedEmail]
+    );
+
+    console.log('Lookup result for', normalizedEmail, '→', schoolResult.rows.length, 'rows found');
+
+    if (schoolResult.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid email or password.'
+      });
+    }
+
+    const school = schoolResult.rows[0];
+    const passwordMatch = await bcrypt.compare(password, school.password);
+
+    if (!passwordMatch) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid email or password.'
+      });
+    }
+
+    const schoolId = school.id;
+
+    await client.query('BEGIN');
+
+    // 1. Scores reference enrollments (not students directly)
+    await client.query('DELETE FROM scores WHERE school_id = $1', [schoolId]);
+
+    // 2. Enrollments reference students, classes, academic_sessions
+    await client.query('DELETE FROM enrollments WHERE school_id = $1', [schoolId]);
+
+    // 3. Students, sessions, classes, subjects
+    await client.query('DELETE FROM students WHERE school_id = $1', [schoolId]);
+    await client.query('DELETE FROM academic_sessions WHERE school_id = $1', [schoolId]);
+    await client.query('DELETE FROM classes WHERE school_id = $1', [schoolId]);
+    await client.query('DELETE FROM subjects WHERE school_id = $1', [schoolId]);
+
+    // 4. Payment & subscription data
+    await client.query('DELETE FROM payment_transactions WHERE school_id = $1', [schoolId]);
+    await client.query('DELETE FROM school_subscriptions WHERE school_id = $1', [schoolId]);
+
+    // 5. Preferences & devices
+    await client.query('DELETE FROM school_preferences WHERE school_id = $1', [schoolId]);
+    await client.query('DELETE FROM device_tokens WHERE school_id = $1', [schoolId]);
+
+    // 6. Finally the school itself
+    await client.query('DELETE FROM schools WHERE id = $1', [schoolId]);
+
+    await client.query('COMMIT');
+
+    transporter.sendMail({
+      from: `"Sabino Edu" <${process.env.EMAIL_USER}>`,
+      to: school.email,
+      subject: 'Your Sabino Edu account has been deleted',
+      html: `
+        <div style="font-family: sans-serif; padding: 24px; border: 1px solid #eee; max-width: 500px; margin: auto;">
+          <h2 style="color: #d32f2f;">Account Deleted</h2>
+          <p>Hi <strong>${school.name}</strong>,</p>
+          <p>Your Sabino Edu account and all associated data (students, classes, grades, preferences)
+          have been permanently deleted as requested.</p>
+          <p>If you did not request this, please contact us immediately at
+          <a href="mailto:${process.env.EMAIL_USER}">${process.env.EMAIL_USER}</a>.</p>
+          <p style="color: #aaa; font-size: 12px;">This action is irreversible.</p>
+        </div>
+      `
+    }).catch(err => console.error('❌ Deletion confirmation email failed:', err.message));
+
+    console.log(`🗑️ Account permanently deleted: School ${schoolId} (${school.email})`);
+
+    res.json({
+      success: true,
+      message: 'Your account and all associated data have been permanently deleted.'
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Account deletion error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete account. Please try again or contact support.'
+    });
+  } finally {
+    client.release();
+  }
+});
+
 // Delete school (requires auth)
 router.delete('/:schoolId', authMiddleware.authenticateToken, authMiddleware.requireSchool, authMiddleware.checkSchoolOwnership, async (req, res) => {
   try {
