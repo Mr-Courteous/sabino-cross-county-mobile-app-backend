@@ -21,6 +21,7 @@ const ReportsRouter = require('./routes/reports')
 const adminNotifications = require('./routes/adminNotifications');
 const publicNotifications = require('./routes/publicNotifications');
 const cronRouter = require('./routes/cron');
+const adminRouter = require('./routes/admin..js'); // Note: Imported as 'admin..js' due to the file's current name
 
 
 const app = express();
@@ -93,6 +94,7 @@ app.use('/api/reports', ReportsRouter);
 app.use('/api/admin/notifications', adminNotifications);
 app.use('/api/notifications', publicNotifications);
 app.use('/api/cron', cronRouter);
+app.use('/api/admin', adminRouter);
 
 
 // Public data endpoints (subjects, academic sessions, enrollments)

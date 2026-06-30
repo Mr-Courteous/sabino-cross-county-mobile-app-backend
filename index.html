@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Delete Account — Sabino Edu</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Sora:wght@600;700&display=swap"
+        rel="stylesheet" />
+    <style>
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --brand: #1a56db;
+            --brand-dark: #1044b0;
+            --danger: #c81e1e;
+            --danger-bg: #fef2f2;
+            --danger-border: #fca5a5;
+            --success: #166534;
+            --success-bg: #f0fdf4;
+            --success-border: #86efac;
+            --text: #111827;
+            --muted: #6b7280;
+            --border: #e5e7eb;
+            --surface: #ffffff;
+            --bg: #f9fafb;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* ── Header ── */
+        header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .logo-mark {
+            width: 32px;
+            height: 32px;
+            background: var(--brand);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .logo-mark svg {
+            width: 18px;
+            height: 18px;
+            fill: #fff;
+        }
+
+        .logo-name {
+            font-family: 'Sora', sans-serif;
+            font-size: 17px;
+            font-weight: 700;
+            color: var(--text);
+            letter-spacing: -0.3px;
+        }
+
+        .logo-name span {
+            color: var(--brand);
+        }
+
+        /* ── Main ── */
+        main {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 16px;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 40px 36px;
+            width: 100%;
+            max-width: 440px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, .06);
+        }
+
+        /* ── Warning banner ── */
+        .warning {
+            background: var(--danger-bg);
+            border: 1px solid var(--danger-border);
+            border-radius: 10px;
+            padding: 14px 16px;
+            margin-bottom: 28px;
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+        }
+
+        .warning svg {
+            width: 18px;
+            height: 18px;
+            flex-shrink: 0;
+            margin-top: 1px;
+            color: var(--danger);
+        }
+
+        .warning-text {
+            font-size: 13.5px;
+            color: #7f1d1d;
+            line-height: 1.5;
+        }
+
+        .warning-text strong {
+            display: block;
+            margin-bottom: 2px;
+            font-size: 14px;
+        }
+
+        /* ── Headings ── */
+        h1 {
+            font-family: 'Sora', sans-serif;
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 6px;
+            letter-spacing: -0.4px;
+        }
+
+        .subtitle {
+            font-size: 14px;
+            color: var(--muted);
+            margin-bottom: 28px;
+            line-height: 1.5;
+        }
+
+        /* ── Form ── */
+        .field {
+            margin-bottom: 18px;
+        }
+
+        label {
+            display: block;
+            font-size: 13.5px;
+            font-weight: 500;
+            color: var(--text);
+            margin-bottom: 6px;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: 'Inter', sans-serif;
+            color: var(--text);
+            background: var(--surface);
+            outline: none;
+            transition: border-color .15s, box-shadow .15s;
+        }
+
+        input:focus {
+            border-color: var(--brand);
+            box-shadow: 0 0 0 3px rgba(26, 86, 219, .12);
+        }
+
+        input::placeholder {
+            color: #9ca3af;
+        }
+
+        /* ── Confirm checkbox ── */
+        .confirm-row {
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+            margin-bottom: 24px;
+            padding: 14px;
+            background: var(--danger-bg);
+            border: 1px solid var(--danger-border);
+            border-radius: 8px;
+        }
+
+        .confirm-row input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            margin-top: 2px;
+            flex-shrink: 0;
+            accent-color: var(--danger);
+            cursor: pointer;
+        }
+
+        .confirm-row label {
+            font-size: 13px;
+            color: #7f1d1d;
+            margin: 0;
+            cursor: pointer;
+            line-height: 1.5;
+        }
+
+        /* ── Button ── */
+        button[type="submit"] {
+            width: 100%;
+            padding: 12px;
+            background: var(--danger);
+            color: #fff;
+            font-size: 14px;
+            font-weight: 600;
+            font-family: 'Inter', sans-serif;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background .15s, opacity .15s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        button[type="submit"]:hover:not(:disabled) {
+            background: #991b1b;
+        }
+
+        button[type="submit"]:disabled {
+            opacity: .6;
+            cursor: not-allowed;
+        }
+
+        /* ── Spinner ── */
+        .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, .3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin .7s linear infinite;
+            display: none;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* ── Alerts ── */
+        .alert {
+            border-radius: 8px;
+            padding: 14px 16px;
+            font-size: 13.5px;
+            line-height: 1.5;
+            margin-bottom: 20px;
+            display: none;
+            align-items: flex-start;
+            gap: 10px;
+        }
+
+        .alert svg {
+            width: 17px;
+            height: 17px;
+            flex-shrink: 0;
+            margin-top: 1px;
+        }
+
+        .alert.error {
+            background: var(--danger-bg);
+            border: 1px solid var(--danger-border);
+            color: #7f1d1d;
+        }
+
+        .alert.success {
+            background: var(--success-bg);
+            border: 1px solid var(--success-border);
+            color: var(--success);
+        }
+
+        /* ── Success state ── */
+        .success-state {
+            text-align: center;
+            padding: 20px 0 8px;
+            display: none;
+        }
+
+        .success-icon {
+            width: 56px;
+            height: 56px;
+            background: var(--success-bg);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 16px;
+        }
+
+        .success-icon svg {
+            width: 28px;
+            height: 28px;
+            color: #16a34a;
+        }
+
+        .success-state h2 {
+            font-family: 'Sora', sans-serif;
+            font-size: 19px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .success-state p {
+            font-size: 14px;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        /* ── Divider ── */
+        .divider {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 24px 0;
+        }
+
+        .alt-text {
+            font-size: 13px;
+            color: var(--muted);
+            text-align: center;
+            line-height: 1.6;
+        }
+
+        .alt-text a {
+            color: var(--brand);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .alt-text a:hover {
+            text-decoration: underline;
+        }
+
+        /* ── Footer ── */
+        footer {
+            text-align: center;
+            padding: 20px;
+            font-size: 12.5px;
+            color: var(--muted);
+        }
+
+        /* ── Mobile ── */
+        @media (max-width: 480px) {
+            .card {
+                padding: 28px 20px;
+                border-radius: 12px;
+            }
+
+            h1 {
+                font-size: 20px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <div class="logo-mark">
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path
+                    d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zm0 12.55L3.5 10.68 12 6.06l8.5 4.62L12 15.55zM12 17l-8.5-4.87v2.5L12 20l8.5-4.87v-2.5L12 17z" />
+            </svg>
+        </div>
+        <span class="logo-name">Sabino <span>Edu</span></span>
+    </header>
+
+    <main>
+        <div class="card">
+
+            <!-- Error alert -->
+            <div class="alert error" id="errorAlert">
+                <svg viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd"
+                        d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z"
+                        clip-rule="evenodd" />
+                </svg>
+                <span id="errorText"></span>
+            </div>
+
+            <!-- Form state -->
+            <div id="formState">
+                <div class="warning">
+                    <svg viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd"
+                            d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+                            clip-rule="evenodd" />
+                    </svg>
+                    <div class="warning-text">
+                        <strong>This action is permanent.</strong>
+                        Deleting your account removes all schools, students, classes, grades, and payment history. This
+                        cannot be undone.
+                    </div>
+                </div>
+
+                <h1>Delete your account</h1>
+                <p class="subtitle">Enter your login credentials to confirm. A confirmation email will be sent once
+                    complete.</p>
+
+                <div class="field">
+                    <label for="email">Email address</label>
+                    <input type="email" id="email" placeholder="school@example.com" autocomplete="email" />
+                </div>
+
+                <div class="field">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" placeholder="Enter your password"
+                        autocomplete="current-password" />
+                </div>
+
+                <div class="confirm-row">
+                    <input type="checkbox" id="confirm" />
+                    <label for="confirm">I understand this will permanently delete my account and all associated
+                        data.</label>
+                </div>
+
+                <button type="submit" id="deleteBtn" onclick="handleDelete()" disabled>
+                    <span class="spinner" id="spinner"></span>
+                    <span id="btnText">Delete my account</span>
+                </button>
+
+                <hr class="divider" />
+
+                <p class="alt-text">
+                    Can't log in? Email us at <a
+                        href="mailto:support@sabinocreations.com">support@sabinocreations.com</a> and we'll process your
+                    request within 48 hours.
+                </p>
+            </div>
+
+            <!-- Success state -->
+            <div class="success-state" id="successState">
+                <div class="success-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <path d="M20 6L9 17l-5-5" />
+                    </svg>
+                </div>
+                <h2>Account deleted</h2>
+                <p>Your Sabino Edu account and all associated data have been permanently deleted. A confirmation has
+                    been sent to your email.</p>
+            </div>
+
+        </div>
+    </main>
+
+    <footer>
+        &copy; 2026 Sabino Creations. All rights reserved.
+    </footer>
+
+    <script>
+        const confirmBox = document.getElementById('confirm');
+        const deleteBtn = document.getElementById('deleteBtn');
+
+        confirmBox.addEventListener('change', () => {
+            deleteBtn.disabled = !confirmBox.checked;
+        });
+
+        async function handleDelete() {
+            const email = document.getElementById('email').value.trim();
+            const password = document.getElementById('password').value;
+            const errorAlert = document.getElementById('errorAlert');
+            const errorText = document.getElementById('errorText');
+
+            // Hide previous error
+            errorAlert.style.display = 'none';
+
+            // Basic validation
+            if (!email || !password) {
+                errorText.textContent = 'Please enter your email and password.';
+                errorAlert.style.display = 'flex';
+                return;
+            }
+
+            // Loading state
+            deleteBtn.disabled = true;
+            document.getElementById('spinner').style.display = 'block';
+            document.getElementById('btnText').textContent = 'Deleting account…';
+
+            try {
+                const res = await fetch('https://sabino-cross-county-mobile-app-back.vercel.app/api/schools/delete-account', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    // Show success state
+                    document.getElementById('formState').style.display = 'none';
+                    document.getElementById('successState').style.display = 'block';
+                } else {
+                    errorText.textContent = data.error || 'Something went wrong. Please try again.';
+                    errorAlert.style.display = 'flex';
+
+                    // Reset button
+                    deleteBtn.disabled = false;
+                    document.getElementById('spinner').style.display = 'none';
+                    document.getElementById('btnText').textContent = 'Delete my account';
+                    confirmBox.checked = false;
+                    deleteBtn.disabled = true;
+                }
+            } catch (err) {
+                errorText.textContent = 'Unable to reach the server. Please check your connection and try again.';
+                errorAlert.style.display = 'flex';
+
+                deleteBtn.disabled = false;
+                document.getElementById('spinner').style.display = 'none';
+                document.getElementById('btnText').textContent = 'Delete my account';
+                confirmBox.checked = false;
+                deleteBtn.disabled = true;
+            }
+        }
+    </script>
+
+</body>
+
+</html>
