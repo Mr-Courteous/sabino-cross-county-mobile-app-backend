@@ -999,7 +999,7 @@ router.delete('/delete-account', async (req, res) => {
       [normalizedEmail]
     );
 
-    console.log('Lookup result for', normalizedEmail, '→', schoolResult.rows.length, 'rows found');
+    // console.log('Lookup result for', normalizedEmail, '→', schoolResult.rows.length, 'rows found');
 
     if (schoolResult.rows.length === 0) {
       return res.status(401).json({
