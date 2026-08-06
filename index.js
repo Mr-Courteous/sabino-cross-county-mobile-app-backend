@@ -22,6 +22,7 @@ const adminNotifications = require('./routes/adminNotifications');
 const publicNotifications = require('./routes/publicNotifications');
 const cronRouter = require('./routes/cron');
 const adminRouter = require('./routes/admin..js'); // Note: Imported as 'admin..js' due to the file's current name
+const { authRouter: staffAuthRouter, managementRouter: staffManagementRouter } = require('./routes/staff-onboarding');
 
 
 const app = express();
@@ -95,6 +96,10 @@ app.use('/api/admin/notifications', adminNotifications);
 app.use('/api/notifications', publicNotifications);
 app.use('/api/cron', cronRouter);
 app.use('/api/admin', adminRouter);
+// Staff Onboarding module (additional school-admin accounts).
+// See routes/staff-onboarding/ for everything related to this feature.
+app.use('/api/staff-auth', staffAuthRouter);
+app.use('/api/staff', staffManagementRouter);
 
 
 // Public data endpoints (subjects, academic sessions, enrollments)

@@ -190,3 +190,45 @@ exports.checkSchoolOwnership = async (req, res, next) => {
     });
   }
 };
+
+// ─────────────────────────────────────────────────────────────
+// MIDDLEWARE 5: requireOwner
+// Added for the staff/admin hierarchy (routes/staff-onboarding).
+//
+// A school's JWT can now come from two places:
+//   - the original owner account (routes/auth.js login)          -> req.user.role is absent or 'owner'
+//   - an additional admin account (routes/staff-onboarding/auth) -> req.user.role === 'admin', req.user.staffId set
+//
+// Both carry type: 'school' and the same schoolId, so every existing
+// requireSchool-protected route continues to work unchanged for admins
+// too (by design — admins can do everything the owner can, for now).
+// The one place that must stay owner-only is destructive actions.
+// Use this ON TOP OF requireSchool for any route that deletes data or
+// manages other admins.
+//
+// Usage:
+//   router.delete('/:id', authMiddleware.authenticateToken, authMiddleware.requireSchool, authMiddleware.requireOwner, handler)
+// ─────────────────────────────────────────────────────────────
+exports.requireOwner = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      error: 'Authentication required.',
+      code: 'NOT_AUTHENTICATED'
+    });
+  }
+
+  // Tokens issued before this feature (or the owner's own login) have no
+  // `role` field / role 'owner' — treat that as the owner. Only an
+  // explicit role of 'admin' is restricted.
+  if (req.user.type === 'school' && req.user.role === 'admin') {
+    return res.status(403).json({
+      success: false,
+      error: 'Only the school owner can perform this action.',
+      message: 'Your admin account does not have permission to delete data. Ask the school owner to do this.',
+      code: 'OWNER_ONLY'
+    });
+  }
+
+  next();
+};

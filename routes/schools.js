@@ -752,12 +752,35 @@ router.post('/revenuecat-webhook', async (req, res) => {
 
 /**
  * @route   POST /api/schools/sync-subscription
- * @desc    Manual sync with RevenueCat API to ensure local DB matches RC status
+ * @desc    Manual sync with RevenueCat API to ensure local DB matches RC status.
+ *
+ *          ROOT CAUSE FIX (payment succeeds but school never gets marked
+ *          'completed'): RevenueCat's REST API is eventually consistent —
+ *          right after a purchase, the SDK on-device already knows the
+ *          purchase succeeded, but RC's subscriber endpoint can take a
+ *          few seconds to reflect it (this is worse for a subscriber's
+ *          very first purchase). The client calls this route immediately
+ *          after `Purchases.purchasePackage()` resolves, so a single,
+ *          immediate GET to /v1/subscribers/{id} can legitimately come
+ *          back with no active entitlement yet — even though the money
+ *          was already taken. That left payment_status stuck on
+ *          'pending', which is what sent the school back to the pricing
+ *          screen on every subsequent request (see the 402 interceptor
+ *          in app/_layout.tsx on the client).
+ *
+ *          Fix: retry the RC lookup a few times with a short backoff
+ *          before concluding there's no active entitlement. The
+ *          RevenueCat webhook (below) remains the authoritative,
+ *          eventually-consistent source of truth regardless.
  * @access  Private (School Admin)
  */
+const RC_SYNC_MAX_ATTEMPTS = 4;
+const RC_SYNC_RETRY_DELAY_MS = 2000;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 router.post('/sync-subscription', authMiddleware.authenticateToken, authMiddleware.requireSchool, async (req, res) => {
   try {
-    const schoolId = req.user.id;
+    const schoolId = req.user.schoolId || req.user.id;
     const RC_API_KEY = process.env.REVENUECAT_REST_API_KEY;
 
     if (!RC_API_KEY) {
@@ -765,44 +788,64 @@ router.post('/sync-subscription', authMiddleware.authenticateToken, authMiddlewa
       return res.status(503).json({ success: false, message: 'Sync service unavailable' });
     }
 
-    console.log(`🔄 [RC Sync] Fetching status for School ID: ${schoolId}`);
-
-    const response = await axios.get(
-      `https://api.revenuecat.com/v1/subscribers/${schoolId}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${RC_API_KEY}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-
-    const subscriber = response.data.subscriber;
-    const entitlements = subscriber?.entitlements || {};
-
-    // Problem 5 Fix: Use actual entitlement ID from env or fallback
     const entitlementId = process.env.REVENUECAT_ENTITLEMENT_ID || 'premium';
-    const entitlement = entitlements[entitlementId] || Object.values(entitlements)[0];
+    let entitlement = null;
+
+    for (let attempt = 1; attempt <= RC_SYNC_MAX_ATTEMPTS; attempt++) {
+      console.log(`🔄 [RC Sync] Fetching status for School ID: ${schoolId} (attempt ${attempt}/${RC_SYNC_MAX_ATTEMPTS})`);
+
+      let subscriber;
+      try {
+        const response = await axios.get(
+          `https://api.revenuecat.com/v1/subscribers/${schoolId}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${RC_API_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+        subscriber = response.data.subscriber;
+      } catch (rcErr) {
+        console.error(`❌ [RC Sync] RevenueCat API error on attempt ${attempt}:`, rcErr.response?.data || rcErr.message);
+        subscriber = null;
+      }
+
+      const entitlements = subscriber?.entitlements || {};
+      entitlement = entitlements[entitlementId] || Object.values(entitlements)[0] || null;
+
+      if (entitlement) break; // found it — no need to keep retrying
+
+      if (attempt < RC_SYNC_MAX_ATTEMPTS) {
+        await sleep(RC_SYNC_RETRY_DELAY_MS);
+      }
+    }
 
     if (entitlement) {
       const expiry = entitlement.expires_date;
-      const isActive = new Date(expiry) > new Date();
+      // A null expires_date means a non-expiring (lifetime / non-renewing
+      // with no configured duration) entitlement — that's active, not
+      // expired. Only compare dates when RC actually gave us one.
+      const isActive = !expiry || new Date(expiry) > new Date();
 
       await pool.query(
         'UPDATE schools SET payment_status = $1, subscription_expiry = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
-        [isActive ? 'completed' : 'expired', expiry, schoolId]
+        [isActive ? 'completed' : 'expired', expiry || null, schoolId]
       );
+
+      console.log(`✅ [RC Sync] School ${schoolId} synced: ${isActive ? 'active' : 'expired'} (expiry: ${expiry || 'none'})`);
 
       return res.json({
         success: true,
         message: 'Subscription status synced successfully',
-        data: { isActive, expiry }
+        data: { isActive, expiry: expiry || null }
       });
     }
 
+    console.warn(`⚠️ [RC Sync] No entitlement found for School ${schoolId} after ${RC_SYNC_MAX_ATTEMPTS} attempts.`);
     return res.json({
       success: true,
-      message: 'No active entitlements found',
+      message: 'No active entitlements found yet. If you just paid, this can take a moment to confirm — try again shortly.',
       data: { isActive: false }
     });
 
@@ -1083,7 +1126,7 @@ router.delete('/delete-account', async (req, res) => {
 });
 
 // Delete school (requires auth)
-router.delete('/:schoolId', authMiddleware.authenticateToken, authMiddleware.requireSchool, authMiddleware.checkSchoolOwnership, async (req, res) => {
+router.delete('/:schoolId', authMiddleware.authenticateToken, authMiddleware.requireSchool, authMiddleware.checkSchoolOwnership, authMiddleware.requireOwner, async (req, res) => {
   try {
     const { schoolId } = req.params;
 

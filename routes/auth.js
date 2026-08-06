@@ -27,6 +27,12 @@ const generateToken = (schoolId, type, countryId = null) => {
         schoolId: schoolId,
         type: type
     };
+    if (type === 'school') {
+        // Explicit 'owner' role, so it lines up with admin accounts created
+        // via routes/staff-onboarding (which carry role: 'admin'). See
+        // middleware/auth.js -> requireOwner.
+        payload.role = 'owner';
+    }
     if (countryId) {
         payload.countryId = countryId;
     }
@@ -96,6 +102,7 @@ router.post('/login', loginLimiter, async (req, res) => {
                     email: school.email,
                     name: school.name,
                     type: 'school',
+                    role: 'owner',
                     countryId: countryId
                 }
             }

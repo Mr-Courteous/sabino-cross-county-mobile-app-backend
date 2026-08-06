@@ -1001,7 +1001,7 @@ router.get('/enrollments', authMiddleware.authenticateToken, authMiddleware.requ
  * @access  Private (School only)
  * @param   enrollmentId - the specific enrollment to remove (get this from GET /students/enrollments)
  */
-router.delete('/enrollments/:enrollmentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
+router.delete('/enrollments/:enrollmentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, authMiddleware.requireOwner, async (req, res) => {
   const client = await pool.connect();
 
   try {
@@ -1595,7 +1595,7 @@ router.put('/:studentId', authMiddleware.authenticateToken, authMiddleware.requi
  * @desc    Remove a student record (cascades to enrollments & scores)
  * @access  Private
  */
-router.delete('/:studentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
+router.delete('/:studentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, authMiddleware.requireOwner, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { studentId } = req.params;
@@ -2177,7 +2177,7 @@ router.post('/self-enroll', authMiddleware.authenticateToken, authMiddleware.req
  * @access  Private (Authenticated schools only)
  * @param   studentId - the student to unenroll
  */
-router.delete('/:studentId/enrollment', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
+router.delete('/:studentId/enrollment', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, authMiddleware.requireOwner, async (req, res) => {
   const client = await pool.connect();
 
   try {
@@ -2251,7 +2251,7 @@ router.delete('/:studentId/enrollment', authMiddleware.authenticateToken, authMi
  * @access  Private (Authenticated schools only)
  * @param   studentId - the student to delete
  */
-router.delete('/:studentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
+router.delete('/:studentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, authMiddleware.requireOwner, async (req, res) => {
   const client = await pool.connect();
 
   try {

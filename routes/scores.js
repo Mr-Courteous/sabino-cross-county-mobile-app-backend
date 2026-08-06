@@ -1498,7 +1498,7 @@ router.get('/class-curriculum', async (req, res) => {
  * @desc    Delete a specific score record
  * @access  Private (with authorization check)
  */
-router.delete('/:scoreId', async (req, res) => {
+router.delete('/:scoreId', authMiddleware.authenticateToken, authMiddleware.requireSchool, authMiddleware.requireOwner, async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { scoreId } = req.params;
