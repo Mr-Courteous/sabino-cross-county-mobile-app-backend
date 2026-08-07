@@ -790,6 +790,8 @@ router.post('/sync-subscription', authMiddleware.authenticateToken, authMiddlewa
 
     const entitlementId = process.env.REVENUECAT_ENTITLEMENT_ID || 'premium';
     let entitlement = null;
+    let lastSubscriber = null;
+    let lastFetchFailed = false;
 
     for (let attempt = 1; attempt <= RC_SYNC_MAX_ATTEMPTS; attempt++) {
       console.log(`🔄 [RC Sync] Fetching status for School ID: ${schoolId} (attempt ${attempt}/${RC_SYNC_MAX_ATTEMPTS})`);
@@ -806,11 +808,14 @@ router.post('/sync-subscription', authMiddleware.authenticateToken, authMiddlewa
           }
         );
         subscriber = response.data.subscriber;
+        lastFetchFailed = false;
       } catch (rcErr) {
         console.error(`❌ [RC Sync] RevenueCat API error on attempt ${attempt}:`, rcErr.response?.data || rcErr.message);
         subscriber = null;
+        lastFetchFailed = true;
       }
 
+      lastSubscriber = subscriber;
       const entitlements = subscriber?.entitlements || {};
       entitlement = entitlements[entitlementId] || Object.values(entitlements)[0] || null;
 
@@ -818,6 +823,27 @@ router.post('/sync-subscription', authMiddleware.authenticateToken, authMiddlewa
 
       if (attempt < RC_SYNC_MAX_ATTEMPTS) {
         await sleep(RC_SYNC_RETRY_DELAY_MS);
+      }
+    }
+
+    if (!entitlement) {
+      // Diagnostic dump — this tells us WHY, instead of just THAT it failed.
+      if (lastFetchFailed) {
+        console.warn(`⚠️ [RC Sync] Diagnosis: the RevenueCat API call itself kept failing (see the ❌ lines above — likely a bad/expired REVENUECAT_REST_API_KEY, or a network/DNS issue reaching api.revenuecat.com).`);
+      } else if (!lastSubscriber) {
+        console.warn(`⚠️ [RC Sync] Diagnosis: RevenueCat returned no subscriber object at all for schoolId "${schoolId}". Unexpected — RC normally auto-creates an empty subscriber record even for an unknown id.`);
+      } else {
+        const entitlementKeys = Object.keys(lastSubscriber.entitlements || {});
+        const subscriptionKeys = Object.keys(lastSubscriber.subscriptions || {});
+        console.warn(`⚠️ [RC Sync] Diagnosis for schoolId "${schoolId}":`);
+        console.warn(`   RC's own id for this customer (original_app_user_id): ${lastSubscriber.original_app_user_id}`);
+        console.warn(`   Entitlements RC has on file: [${entitlementKeys.join(', ') || 'none'}] (looking for "${entitlementId}")`);
+        console.warn(`   Raw subscriptions RC has on file: [${subscriptionKeys.join(', ') || 'none'}]`);
+        if (subscriptionKeys.length > 0 && entitlementKeys.length === 0) {
+          console.warn(`   👉 A subscription IS on file but is not attached to ANY entitlement. This usually means the product isn't linked to an entitlement in the RevenueCat dashboard (Products/Entitlements setup) — not a timing issue, and retrying will never fix it.`);
+        } else if (subscriptionKeys.length === 0 && entitlementKeys.length === 0) {
+          console.warn(`   👉 RevenueCat has NOTHING on file for schoolId "${schoolId}" — no subscriptions, no entitlements. This means the purchase was almost certainly recorded under a DIFFERENT app_user_id (the app didn't call Purchases.logIn(schoolId) before the purchase, or it ran after). Check Purchases.getAppUserID() on-device right before purchasePackage() and compare it to this schoolId.`);
+        }
       }
     }
 
