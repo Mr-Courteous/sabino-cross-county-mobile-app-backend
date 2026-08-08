@@ -414,18 +414,43 @@ router.delete('/admins/:staffId', authMiddleware.requireOwner, async (req, res) 
 
 /**
  * @route   GET /api/staff/audit-log
- * @desc    Recent staff-management activity for this school.
+ * @desc    Recent staff-management activity for this school, paginated
+ *          with a keyset cursor (id-based — cheap and stable even as
+ *          the table grows, unlike OFFSET which gets slower and can
+ *          skip/repeat rows if new entries land between page fetches).
+ * @query   limit  (optional, default 30, max 100)
+ * @query   before (optional) — id of the oldest entry already loaded;
+ *          returns the next page older than that entry.
  * @access  Private (owner or admin — transparency, not a delete action)
  */
 router.get('/audit-log', async (req, res) => {
   try {
-    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 50));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 30));
+    const before = req.query.before ? parseInt(req.query.before) : null;
+
+    const params = [req.user.schoolId];
+    let cursorClause = '';
+    if (before && !Number.isNaN(before)) {
+      params.push(before);
+      cursorClause = ` AND id < $${params.length}`;
+    }
+    params.push(limit + 1); // fetch one extra row to know if another page exists
+
     const result = await pool.query(
       `SELECT id, actor_type, actor_staff_id, action, target_staff_id, target_type, target_id, details, created_at
-       FROM staff_audit_logs WHERE school_id = $1 ORDER BY created_at DESC LIMIT $2`,
-      [req.user.schoolId, limit]
+       FROM staff_audit_logs WHERE school_id = $1${cursorClause} ORDER BY id DESC LIMIT $${params.length}`,
+      params
     );
-    res.json({ success: true, data: result.rows });
+
+    const hasMore = result.rows.length > limit;
+    const rows = hasMore ? result.rows.slice(0, limit) : result.rows;
+    const nextCursor = rows.length > 0 ? rows[rows.length - 1].id : null;
+
+    res.json({
+      success: true,
+      data: rows,
+      pagination: { hasMore, nextCursor, limit }
+    });
   } catch (error) {
     console.error('❌ [staff-management] audit-log error:', error.message);
     res.status(500).json({ success: false, error: 'Failed to load audit log.' });
