@@ -201,10 +201,14 @@ exports.checkSchoolOwnership = async (req, res, next) => {
 //
 // Both carry type: 'school' and the same schoolId, so every existing
 // requireSchool-protected route continues to work unchanged for admins
-// too (by design — admins can do everything the owner can, for now).
-// The one place that must stay owner-only is destructive actions.
-// Use this ON TOP OF requireSchool for any route that deletes data or
-// manages other admins.
+// too (by design — admins can read/write students, scores, classes,
+// reports, etc. same as the owner). Two categories are owner-only:
+//   1. Destructive actions (delete student/enrollment/score/school,
+//      clear a cached AI remark).
+//   2. Managing other admin accounts (create, invite, revoke invite,
+//      deactivate, reactivate, delete — see routes/staff-onboarding/management.js).
+// Use this ON TOP OF requireSchool (or requireSchool via authRouter's
+// own authenticateToken) for any route in either category.
 //
 // Usage:
 //   router.delete('/:id', authMiddleware.authenticateToken, authMiddleware.requireSchool, authMiddleware.requireOwner, handler)
@@ -225,7 +229,7 @@ exports.requireOwner = (req, res, next) => {
     return res.status(403).json({
       success: false,
       error: 'Only the school owner can perform this action.',
-      message: 'Your admin account does not have permission to delete data. Ask the school owner to do this.',
+      message: 'Your admin account does not have permission to do this. Ask the school owner.',
       code: 'OWNER_ONLY'
     });
   }

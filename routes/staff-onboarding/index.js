@@ -10,10 +10,12 @@
 // authRouter       -> login, forgot/reset password, forced first-login
 //                     password change, invite-code redemption. Mostly
 //                     public, self-service.
-// managementRouter -> everything the school owner (or an existing
-//                     admin) uses to create/list/deactivate/delete
-//                     other admin accounts. Requires a school-type
-//                     token on every route.
+// managementRouter -> everything for managing OTHER admin accounts.
+//                     Reads (list admins, audit log) are open to both
+//                     owner and admin. Writes (create, invite, revoke
+//                     invite, deactivate, reactivate, delete) are
+//                     OWNER ONLY — see requireOwner guards in
+//                     ./management.js.
 // ─────────────────────────────────────────────────────────────
 module.exports = {
   authRouter: require('./auth'),

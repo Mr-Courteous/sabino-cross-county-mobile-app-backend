@@ -1015,12 +1015,12 @@ router.post('/regenerate-remark/:enrollmentId', authMiddleware.authenticateToken
 
 /**
  * @route   DELETE /api/reports/remark/:enrollmentId
- * @desc    Admin-only: Clear cached AI remark to force fresh regeneration
+ * @desc    Owner-only: Clear cached AI remark to force fresh regeneration
  *          on the next report card email/download request.
- * @access  Private (School Admin only — type: 'school')
+ * @access  Private (School OWNER only — type: 'school', role: 'owner')
  * @body    { term: number, sessionId: number }
  */
-router.delete('/remark/:enrollmentId', authMiddleware.authenticateToken, async (req, res) => {
+router.delete('/remark/:enrollmentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, authMiddleware.requireOwner, async (req, res) => {
   try {
     const { enrollmentId } = req.params;
     const { term, sessionId } = req.body;
@@ -1030,14 +1030,6 @@ router.delete('/remark/:enrollmentId', authMiddleware.authenticateToken, async (
       return res.status(400).json({
         success: false,
         error: 'Both term and sessionId are required in the request body.'
-      });
-    }
-
-    // Security: Only school admins may clear remarks
-    if (req.user.type !== 'school') {
-      return res.status(403).json({
-        success: false,
-        error: 'Unauthorized. Only school administrators can regenerate AI remarks.'
       });
     }
 

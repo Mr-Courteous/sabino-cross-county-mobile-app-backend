@@ -5,10 +5,11 @@
 // accounts. Mounted at /api/staff in index.js.
 //
 // Hierarchy rule (per product decision): an admin created here can do
-// everything the owner can EXCEPT delete data or manage other admins.
-// That's enforced by requiring `authMiddleware.requireOwner` on the
-// routes that create/deactivate/delete other admins below, and by the
-// same middleware having been added to the existing delete routes
+// everything the owner can EXCEPT delete data or manage other admins
+// (including inviting/creating new admins). That's enforced by requiring
+// `authMiddleware.requireOwner` on the routes that create, invite,
+// revoke, deactivate, reactivate, or delete other admins below, and by
+// the same middleware having been added to the existing delete routes
 // elsewhere in the codebase (students, scores, schools).
 // ─────────────────────────────────────────────────────────────
 const express = require('express');
@@ -32,10 +33,10 @@ router.use(async (req, res, next) => {
 });
 
 // Everything in this file requires a logged-in school-type account
-// (owner OR admin — read access and account creation are open to both
-// per "no role based restriction for now"). Individual routes tighten
-// this further with requireOwner where destructive/management actions
-// are involved.
+// (owner OR admin). Read access (listing admins, audit log) is open to
+// both. Individual routes tighten this further with requireOwner for
+// anything that creates, invites, deactivates, reactivates, or deletes
+// an admin account, or revokes an invite — the owner-only actions.
 router.use(authMiddleware.authenticateToken, authMiddleware.requireSchool);
 
 const transporter = nodemailer.createTransport({
@@ -149,10 +150,10 @@ router.get('/admins/:staffId', async (req, res) => {
  * @desc    Path A — admin-assisted creation. Creates the account
  *          immediately with a temp password and emails the credentials;
  *          the new admin must change the password on first login.
- * @access  Private (owner or admin — either can add another admin)
+ * @access  Private (OWNER ONLY — admins cannot create other admins)
  * @body    { fullName, email, phone? }
  */
-router.post('/admins', async (req, res) => {
+router.post('/admins', authMiddleware.requireOwner, async (req, res) => {
   const client = await pool.connect();
   try {
     const { fullName, email, phone } = req.body;
@@ -239,10 +240,10 @@ router.post('/admins', async (req, res) => {
  * @route   POST /api/staff/admins/invite
  * @desc    Path B — generate a self-registration code for a new admin.
  *          The invitee redeems it via POST /api/staff-auth/redeem-code.
- * @access  Private (owner or admin)
+ * @access  Private (OWNER ONLY — admins cannot invite other admins)
  * @body    { email, fullName?, phone?, expiresInHours? }
  */
-router.post('/admins/invite', async (req, res) => {
+router.post('/admins/invite', authMiddleware.requireOwner, async (req, res) => {
   try {
     const { email, fullName, phone, expiresInHours } = req.body;
     if (!email) {
@@ -320,9 +321,9 @@ router.post('/admins/invite', async (req, res) => {
 /**
  * @route   DELETE /api/staff/admins/invite/:inviteId
  * @desc    Revoke a not-yet-redeemed invite code.
- * @access  Private (owner or admin)
+ * @access  Private (OWNER ONLY)
  */
-router.delete('/admins/invite/:inviteId', async (req, res) => {
+router.delete('/admins/invite/:inviteId', authMiddleware.requireOwner, async (req, res) => {
   try {
     const result = await pool.query(
       `UPDATE staff_invite_codes SET status = 'revoked' WHERE id = $1 AND school_id = $2 AND status = 'pending' RETURNING id`,
