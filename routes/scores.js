@@ -3,6 +3,7 @@ const router = express.Router({ mergeParams: true });
 const pool = require('../database/db');
 const authMiddleware = require('../middleware/auth');
 const checkSubscription = require('../middleware/checkSubscription');
+const { auditRoute } = require('../middleware/auditLog');
 
 // Apply authentication middleware to all score routes
 router.use(authMiddleware.authenticateToken);
@@ -188,7 +189,9 @@ router.get('/sheet', authMiddleware.requireSchool, checkSubscription, async (req
  *            ]
  *          }
  */
-router.post('/record', authMiddleware.requireSchool, checkSubscription, async (req, res) => {
+router.post('/record', authMiddleware.requireSchool, checkSubscription,
+  auditRoute('score.recorded', (req, body) => ({ type: 'score', id: null, details: { count: body?.count } })),
+  async (req, res) => {
   const client = await pool.connect();
 
   try {
@@ -1568,7 +1571,9 @@ router.delete('/:scoreId', authMiddleware.authenticateToken, authMiddleware.requ
  *            teacherRemark: String (optional)
  *          }
  */
-router.put('/:scoreId', async (req, res) => {
+router.put('/:scoreId',
+  auditRoute('score.updated', (req) => ({ type: 'score', id: req.params.scoreId })),
+  async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { scoreId } = req.params;

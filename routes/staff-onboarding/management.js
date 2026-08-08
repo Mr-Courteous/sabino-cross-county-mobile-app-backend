@@ -421,7 +421,7 @@ router.get('/audit-log', async (req, res) => {
   try {
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 50));
     const result = await pool.query(
-      `SELECT id, actor_type, actor_staff_id, action, target_staff_id, details, created_at
+      `SELECT id, actor_type, actor_staff_id, action, target_staff_id, target_type, target_id, details, created_at
        FROM staff_audit_logs WHERE school_id = $1 ORDER BY created_at DESC LIMIT $2`,
       [req.user.schoolId, limit]
     );

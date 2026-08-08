@@ -90,6 +90,13 @@ async function ensureStaffTables() {
       )
     `);
 
+    // Widen the table to log actions against ANY entity (students,
+    // scores, etc.), not just staff accounts. Purely additive — both
+    // columns are nullable, existing rows and existing queries that
+    // only select target_staff_id are unaffected.
+    await pool.query(`ALTER TABLE staff_audit_logs ADD COLUMN IF NOT EXISTS target_type VARCHAR(30)`);
+    await pool.query(`ALTER TABLE staff_audit_logs ADD COLUMN IF NOT EXISTS target_id INTEGER`);
+
     // Helpful indexes — best effort, ignore if they already exist.
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_staff_school_id ON staff(school_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_staff_invite_codes_school_id ON staff_invite_codes(school_id)`);
@@ -115,4 +122,26 @@ async function logStaffAudit({ schoolId, actorType, actorStaffId = null, action,
   }
 }
 
-module.exports = { pool, ensureStaffTables, logStaffAudit };
+/**
+ * Generic counterpart to logStaffAudit — used by middleware/auditLog.js
+ * for non-staff entities (students, scores, ...). Targets go in
+ * target_type/target_id instead of target_staff_id, which stays null
+ * here so existing staff-account queries (WHERE target_staff_id = ...)
+ * are unaffected. Also never throws, for the same reason as above, and
+ * ensures the (idempotent) table/columns exist first since callers
+ * outside this module won't have already triggered ensureStaffTables.
+ */
+async function logGenericAudit({ schoolId, actorType, actorStaffId = null, action, targetType = null, targetId = null, details = null }) {
+  try {
+    await ensureStaffTables();
+    await pool.query(
+      `INSERT INTO staff_audit_logs (school_id, actor_type, actor_staff_id, action, target_type, target_id, details)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [schoolId, actorType, actorStaffId, action, targetType, targetId, details ? JSON.stringify(details) : null]
+    );
+  } catch (err) {
+    console.error('⚠️ [auditLog] Failed to write audit log:', err.message);
+  }
+}
+
+module.exports = { pool, ensureStaffTables, logStaffAudit, logGenericAudit };

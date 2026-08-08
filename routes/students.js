@@ -7,6 +7,7 @@ const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const authMiddleware = require('../middleware/auth');
 const checkSubscription = require('../middleware/checkSubscription');
+const { auditRoute } = require('../middleware/auditLog');
 const { validatePassword } = require('../utils/password-validator');
 const multer = require('multer');
 const { put } = require('@vercel/blob');
@@ -1244,7 +1245,13 @@ router.post('/bulk', authMiddleware.authenticateToken, authMiddleware.requireSch
  */
 
 
-router.post('/', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
+router.post('/', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription,
+  auditRoute('student.created', (req, body) => ({
+    type: 'student',
+    id: body?.data?.student?.id,
+    details: { name: `${req.body?.firstName || ''} ${req.body?.lastName || ''}`.trim() }
+  })),
+  async (req, res) => {
   const client = await pool.connect();
 
   try {
@@ -1540,7 +1547,9 @@ router.get('/:studentId', authMiddleware.authenticateToken, authMiddleware.requi
  * @desc    Update student details
  * @access  Private
  */
-router.put('/:studentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
+router.put('/:studentId', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription,
+  auditRoute('student.updated', (req) => ({ type: 'student', id: req.params.studentId })),
+  async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { studentId } = req.params;
