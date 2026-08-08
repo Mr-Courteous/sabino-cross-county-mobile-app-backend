@@ -78,7 +78,7 @@ router.get('/:schoolId', authMiddleware.requireSchool, authMiddleware.checkSchoo
 router.post('/:schoolId', upload.fields([
     { name: 'logo', maxCount: 1 },
     { name: 'stamp', maxCount: 1 }
-]), authMiddleware.requireSchool, authMiddleware.checkSchoolOwnership, checkSubscription, async (req, res) => {
+]), authMiddleware.requireSchool, authMiddleware.checkSchoolOwnership, authMiddleware.requireOwner, checkSubscription, async (req, res) => {
     const { schoolId } = req.params;
 
     console.log('🔍 POST /preferences/:schoolId - Request received');

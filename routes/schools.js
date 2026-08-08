@@ -969,7 +969,7 @@ router.get('/me', authMiddleware.authenticateToken, checkSubscription, authMiddl
 });
 
 // Update current school details using token
-router.put('/me', authMiddleware.authenticateToken, authMiddleware.requireSchool, async (req, res) => {
+router.put('/me', authMiddleware.authenticateToken, authMiddleware.requireSchool, authMiddleware.requireOwner, async (req, res) => {
   try {
     const schoolId = req.user?.id;
     if (!schoolId) {
@@ -1009,7 +1009,7 @@ router.put('/me', authMiddleware.authenticateToken, authMiddleware.requireSchool
 });
 
 // Update school (requires auth)
-router.put('/:schoolId', authMiddleware.authenticateToken, authMiddleware.requireSchool, authMiddleware.checkSchoolOwnership, async (req, res) => {
+router.put('/:schoolId', authMiddleware.authenticateToken, authMiddleware.requireSchool, authMiddleware.checkSchoolOwnership, authMiddleware.requireOwner, async (req, res) => {
   try {
     const { schoolId } = req.params;
     const { name, address, city, state, country, phone, email, registration_code } = req.body;

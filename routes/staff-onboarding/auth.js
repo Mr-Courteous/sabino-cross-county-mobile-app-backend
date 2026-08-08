@@ -61,24 +61,45 @@ async function sendMail(to, subject, html) {
   await transporter.sendMail({ from: `"Sabino Edu" <${process.env.EMAIL_USER}>`, to, subject, html });
 }
 
-function generateStaffToken(staff) {
+function generateStaffToken(staff, countryId = null) {
   // NOTE: `id` is deliberately the SCHOOL id (not the staff row id) so
   // every existing requireSchool / checkSchoolOwnership / checkSubscription
   // route keeps working unchanged for admins. `staffId` identifies the
   // actual person for audit logging and self-service actions.
-  return jwt.sign(
-    {
-      id: staff.school_id,
-      schoolId: staff.school_id,
-      type: 'school',
-      role: 'admin',
-      staffId: staff.id,
-      name: staff.full_name,
-      email: staff.email,
-    },
-    process.env.JWT_SECRET,
-    { expiresIn: '1h' }
-  );
+  const payload = {
+    id: staff.school_id,
+    schoolId: staff.school_id,
+    type: 'school',
+    role: 'admin',
+    staffId: staff.id,
+    name: staff.full_name,
+    email: staff.email,
+  };
+  // Same country lookup the owner token carries (see routes/auth.js ->
+  // generateToken) — a school's country doesn't change based on which
+  // staff member is logged in, so admins need it too for any
+  // country-dependent read/write (grading scales, currency, etc.).
+  if (countryId) {
+    payload.countryId = countryId;
+  }
+  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '1h' });
+}
+
+// Look up a school's country_id the same way routes/auth.js does for the
+// owner token: schools.country (text) -> countries.id. Shared here so
+// every admin-token-issuing route (login, redeem-code) stays consistent.
+async function lookupCountryId(schoolId) {
+  try {
+    const schoolResult = await pool.query('SELECT country FROM schools WHERE id = $1', [schoolId]);
+    const countryName = schoolResult.rows[0]?.country;
+    if (!countryName) return null;
+
+    const countryResult = await pool.query('SELECT id FROM countries WHERE name = $1 LIMIT 1', [countryName]);
+    return countryResult.rows[0]?.id || null;
+  } catch (err) {
+    console.error('❌ [staff-auth] country lookup error:', err.message);
+    return null;
+  }
 }
 
 /**
@@ -117,7 +138,8 @@ router.post('/login', loginLimiter, async (req, res) => {
 
     await pool.query('UPDATE staff SET last_login_at = NOW() WHERE id = $1', [staff.id]);
 
-    const token = generateStaffToken(staff);
+    const countryId = await lookupCountryId(staff.school_id);
+    const token = generateStaffToken(staff, countryId);
 
     res.json({
       success: true,
@@ -131,6 +153,7 @@ router.post('/login', loginLimiter, async (req, res) => {
           name: staff.full_name,
           type: 'school',
           role: 'admin',
+          countryId,
         },
         forcePasswordChange: staff.force_password_change === true,
       }
@@ -171,6 +194,7 @@ router.get('/me', authMiddleware.authenticateToken, authMiddleware.requireSchool
           status: staff.status,
           forcePasswordChange: staff.force_password_change,
           lastLoginAt: staff.last_login_at,
+          countryId: req.user.countryId || null,
         }
       });
     }
@@ -191,6 +215,7 @@ router.get('/me', authMiddleware.authenticateToken, authMiddleware.requireSchool
         isOwner: true,
         status: 'active',
         forcePasswordChange: false,
+        countryId: req.user.countryId || null,
       }
     });
   } catch (error) {
@@ -488,7 +513,8 @@ router.post('/redeem-code', async (req, res) => {
       details: { via: 'invite_code' },
     });
 
-    const token = generateStaffToken({ id: staff.id, school_id: staff.school_id, full_name: staff.full_name, email: staff.email });
+    const countryId = await lookupCountryId(staff.school_id);
+    const token = generateStaffToken({ id: staff.id, school_id: staff.school_id, full_name: staff.full_name, email: staff.email }, countryId);
 
     res.status(201).json({
       success: true,
@@ -502,6 +528,7 @@ router.post('/redeem-code', async (req, res) => {
           name: staff.full_name,
           type: 'school',
           role: 'admin',
+          countryId,
         }
       }
     });
