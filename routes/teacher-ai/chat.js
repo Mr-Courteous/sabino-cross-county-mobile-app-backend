@@ -1,0 +1,328 @@
+// ─────────────────────────────────────────────────────────────
+// routes/teacher-ai/chat.js
+//
+// The open-ended "Ask Sabino AI" chat (addendum §1.3, teacher_ai_chat)
+// that can produce a Scheme of Work, Lesson Plan or Lesson Note.
+//
+// Reuses the exact same AI building block already in production —
+// Groq via the OpenAI SDK (see routes/reports.js's AI remark feature)
+// — instead of introducing a second provider/config into the app.
+//
+// Mounted at /api/teacher-ai/chat (see index.js).
+// ─────────────────────────────────────────────────────────────
+const express = require('express');
+const router = express.Router();
+const OpenAI = require('openai');
+const authMiddleware = require('../../middleware/auth');
+const checkSubscription = require('../../middleware/checkSubscription');
+const { pool, ensureTeacherAiTables, getTeacherIdentity, isSameTeacher } = require('./db');
+
+const openai = new OpenAI({
+  apiKey: process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY,
+  baseURL: 'https://api.groq.com/openai/v1',
+});
+const AI_MODEL = 'llama-3.3-70b-versatile';
+
+// Mandatory disclaimer, per addendum §1.3 / §1.5 — "carries the
+// disclaimer ... wherever generated content is displayed, in chat and
+// in the editor, not only at the point of approval."
+const DISCLAIMER = 'AI-generated content may contain errors. You are encouraged to review before use.';
+
+const VALID_CONTENT_TYPES = ['scheme_of_work', 'lesson_plan', 'lesson_note'];
+
+const SCHEMAS = {
+  scheme_of_work:
+    '{"contentType":"scheme_of_work","title":"string","weeks":[{"weekNo":1,"topic":"string","objectives":"string","resources":"string"}]}',
+  lesson_plan:
+    '{"contentType":"lesson_plan","title":"string","topic":"string","duration":"string","objectives":"string","materials":"string","teacherActivities":"string","studentActivities":"string","evaluation":"string"}',
+  lesson_note:
+    '{"contentType":"lesson_note","title":"string","topic":"string","objectives":"string","teacherActivities":"string","studentActivities":"string","assessment":"string"}',
+};
+
+const STRUCTURED_START = '<<<SABINO_STRUCTURED>>>';
+const STRUCTURED_END = '<<<END_STRUCTURED>>>';
+
+function buildSystemPrompt(lockedContentType) {
+  const base = `You are Sabino AI, a teaching assistant embedded in Sabino Edu, a school app used by teachers in Nigerian/African schools. You help teachers produce three kinds of classroom-ready material:
+- Scheme of Work: a term-long, week-by-week breakdown of what will be taught.
+- Lesson Plan: a plan for a single lesson or block of lessons (objectives, materials, activity flow, timing, evaluation).
+- Lesson Note: a classroom-ready note a teacher delivers from directly (topic, objectives, teacher activities, student activities, assessment).
+
+Be concise, practical and curriculum-appropriate. Reply to the teacher in plain, helpful prose first.`;
+
+  if (lockedContentType && SCHEMAS[lockedContentType]) {
+    return `${base}
+
+This conversation was started for a ${lockedContentType.replace(/_/g, ' ')}. Whenever your reply generates or updates that document, after your prose reply add a new line with exactly ${STRUCTURED_START}, then ONE JSON object (no markdown, no commentary) matching this schema, then a new line with exactly ${STRUCTURED_END}:
+${SCHEMAS[lockedContentType]}
+If the teacher is just asking a question and not generating/updating the document, omit the structured block entirely.`;
+  }
+
+  return `${base}
+
+If your reply generates one of the three document types above, after your prose reply add a new line with exactly ${STRUCTURED_START}, then ONE JSON object (no markdown, no commentary) matching whichever of these schemas fits, then a new line with exactly ${STRUCTURED_END}:
+Scheme of Work: ${SCHEMAS.scheme_of_work}
+Lesson Plan: ${SCHEMAS.lesson_plan}
+Lesson Note: ${SCHEMAS.lesson_note}
+If the teacher is just chatting or asking a question, omit the structured block entirely.`;
+}
+
+function parseAiReply(raw) {
+  const startIdx = raw.indexOf(STRUCTURED_START);
+  const endIdx = raw.indexOf(STRUCTURED_END);
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
+    return { text: raw.trim(), structured: null };
+  }
+
+  const text = raw.slice(0, startIdx).trim();
+  const jsonSlice = raw.slice(startIdx + STRUCTURED_START.length, endIdx).trim();
+  try {
+    const structured = JSON.parse(jsonSlice);
+    return { text, structured };
+  } catch (err) {
+    console.error('[teacher-ai/chat] Failed to parse structured block:', err.message);
+    return { text, structured: null };
+  }
+}
+
+router.use(authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription);
+router.use(async (req, res, next) => {
+  try {
+    await ensureTeacherAiTables();
+    next();
+  } catch (err) {
+    console.error('❌ [teacher-ai/chat] Failed to ensure tables:', err.message);
+    res.status(500).json({ success: false, error: 'Server initialization error.' });
+  }
+});
+
+// ── GET / — the teacher's own conversation history, most recent first ──
+router.get('/', async (req, res) => {
+  try {
+    const identity = getTeacherIdentity(req);
+    const result = await pool.query(
+      `SELECT id, content_type, context_ref, title, updated_at, created_at,
+              jsonb_array_length(messages) AS message_count
+       FROM ai_conversations
+       WHERE school_id = $1 AND teacher_type = $2 AND teacher_id = $3
+       ORDER BY updated_at DESC
+       LIMIT 50`,
+      [req.user.schoolId, identity.type, identity.id]
+    );
+    res.json({
+      success: true,
+      data: result.rows.map((r) => ({
+        id: r.id,
+        contentType: r.content_type,
+        contextRef: r.context_ref,
+        title: r.title,
+        messageCount: r.message_count,
+        updatedAt: r.updated_at,
+        createdAt: r.created_at,
+      })),
+    });
+  } catch (error) {
+    console.error('[teacher-ai/chat] list error:', error.message);
+    res.status(500).json({ success: false, error: 'Failed to fetch conversations.' });
+  }
+});
+
+// ── GET /:id — full conversation thread ──
+router.get('/:id', async (req, res) => {
+  try {
+    const identity = getTeacherIdentity(req);
+    const result = await pool.query(`SELECT * FROM ai_conversations WHERE id = $1 AND school_id = $2`, [
+      req.params.id,
+      req.user.schoolId,
+    ]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Conversation not found.' });
+    }
+    const row = result.rows[0];
+    if (!isSameTeacher(identity, row)) {
+      return res.status(403).json({ success: false, error: 'You can only view your own conversations.' });
+    }
+    res.json({
+      success: true,
+      data: {
+        id: row.id,
+        contentType: row.content_type,
+        contextRef: row.context_ref,
+        title: row.title,
+        messages: row.messages,
+        disclaimer: DISCLAIMER,
+      },
+    });
+  } catch (error) {
+    console.error('[teacher-ai/chat] get error:', error.message);
+    res.status(500).json({ success: false, error: 'Failed to fetch conversation.' });
+  }
+});
+
+// ── POST / — send a message, get an AI reply ──
+router.post('/', async (req, res) => {
+  try {
+    const { message, conversationId, contentType, contextRef, attachments } = req.body || {};
+
+    if (!message || typeof message !== 'string' || !message.trim()) {
+      return res.status(400).json({ success: false, error: 'A message is required.' });
+    }
+    if (contentType && !VALID_CONTENT_TYPES.includes(contentType)) {
+      return res.status(400).json({
+        success: false,
+        error: `contentType must be one of: ${VALID_CONTENT_TYPES.join(', ')}`,
+      });
+    }
+
+    const identity = getTeacherIdentity(req);
+
+    // ── Load or create the conversation ──
+    let conversation;
+    if (conversationId) {
+      const existing = await pool.query(`SELECT * FROM ai_conversations WHERE id = $1 AND school_id = $2`, [
+        conversationId,
+        req.user.schoolId,
+      ]);
+      if (existing.rows.length === 0) {
+        return res.status(404).json({ success: false, error: 'Conversation not found.' });
+      }
+      if (!isSameTeacher(identity, existing.rows[0])) {
+        return res.status(403).json({ success: false, error: 'You can only continue your own conversations.' });
+      }
+      conversation = existing.rows[0];
+    } else {
+      const created = await pool.query(
+        `INSERT INTO ai_conversations (school_id, teacher_type, teacher_id, teacher_name, content_type, context_ref, title, messages)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, '[]')
+         RETURNING *`,
+        [
+          req.user.schoolId,
+          identity.type,
+          identity.id,
+          identity.name,
+          contentType || null,
+          contextRef ? JSON.stringify(contextRef) : null,
+          message.trim().slice(0, 80),
+        ]
+      );
+      conversation = created.rows[0];
+    }
+
+    // ── Append the user's message immediately, so it's never lost even
+    //    if the AI call below fails. ──
+    const history = Array.isArray(conversation.messages) ? conversation.messages : [];
+    const userMessage = {
+      role: 'user',
+      content: message.trim(),
+      attachments: Array.isArray(attachments) ? attachments : [],
+      createdAt: new Date().toISOString(),
+    };
+    history.push(userMessage);
+
+    await pool.query(`UPDATE ai_conversations SET messages = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, [
+      JSON.stringify(history),
+      conversation.id,
+    ]);
+
+    // ── Call the AI ──
+    const effectiveContentType = contentType || conversation.content_type || null;
+    const systemPrompt = buildSystemPrompt(effectiveContentType);
+
+    // Last 20 turns of plain-text history is enough context for this
+    // use case and keeps the request small/fast on Groq.
+    const chatMessages = [
+      { role: 'system', content: systemPrompt },
+      ...history.slice(-20).map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
+    ];
+
+    let raw;
+    try {
+      const completion = await openai.chat.completions.create({
+        model: AI_MODEL,
+        messages: chatMessages,
+        temperature: 0.4,
+      });
+      raw = completion.choices?.[0]?.message?.content || '';
+    } catch (aiError) {
+      console.error('[teacher-ai/chat] AI call failed:', aiError.message);
+      return res.status(502).json({
+        success: false,
+        error: 'Sabino AI is temporarily unavailable. Please try again in a moment.',
+        conversationId: conversation.id,
+      });
+    }
+
+    const { text, structured } = parseAiReply(raw);
+    const resolvedContentType = (structured && structured.contentType) || effectiveContentType || null;
+
+    const assistantMessage = {
+      role: 'assistant',
+      content: text,
+      structured: structured || null,
+      contentType: resolvedContentType,
+      model: AI_MODEL,
+      createdAt: new Date().toISOString(),
+    };
+    history.push(assistantMessage);
+
+    const updated = await pool.query(
+      `UPDATE ai_conversations
+       SET messages = $1, content_type = COALESCE($2, content_type), updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3
+       RETURNING id, content_type, context_ref, title`,
+      [JSON.stringify(history), resolvedContentType, conversation.id]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        conversationId: updated.rows[0].id,
+        contentType: updated.rows[0].content_type,
+        message: {
+          role: 'assistant',
+          text,
+          structured,
+          contentType: resolvedContentType,
+        },
+        // Handy for "Copy to Editor" on the client — tells it which
+        // /api/teacher-ai/<endpoint> to POST the structured payload to.
+        copyToEditorEndpoint:
+          resolvedContentType === 'scheme_of_work'
+            ? 'scheme-of-work'
+            : resolvedContentType === 'lesson_plan'
+            ? 'lesson-plans'
+            : resolvedContentType === 'lesson_note'
+            ? 'lesson-notes'
+            : null,
+        disclaimer: DISCLAIMER,
+      },
+    });
+  } catch (error) {
+    console.error('[teacher-ai/chat] send error:', error.message);
+    res.status(500).json({ success: false, error: 'Failed to process chat message.' });
+  }
+});
+
+// ── DELETE /:id — discard a conversation ──
+router.delete('/:id', async (req, res) => {
+  try {
+    const identity = getTeacherIdentity(req);
+    const existing = await pool.query(`SELECT * FROM ai_conversations WHERE id = $1 AND school_id = $2`, [
+      req.params.id,
+      req.user.schoolId,
+    ]);
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Conversation not found.' });
+    }
+    if (!isSameTeacher(identity, existing.rows[0])) {
+      return res.status(403).json({ success: false, error: 'You can only delete your own conversations.' });
+    }
+    await pool.query(`DELETE FROM ai_conversations WHERE id = $1`, [req.params.id]);
+    res.json({ success: true, data: { id: Number(req.params.id) } });
+  } catch (error) {
+    console.error('[teacher-ai/chat] delete error:', error.message);
+    res.status(500).json({ success: false, error: 'Failed to delete conversation.' });
+  }
+});
+
+module.exports = router;

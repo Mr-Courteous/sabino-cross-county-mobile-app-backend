@@ -19,8 +19,16 @@ const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
-const { pool, ensureStaffTables, logStaffAudit } = require('./db');
+const { pool, ensureStaffTables, logStaffAudit, resolveClassForSchool } = require('./db');
 const authMiddleware = require('../../middleware/auth');
+
+// 'class_teacher' is a class-SCOPED account (see middleware/auth.js ->
+// getTeacherClassScope): once assigned a class, they're restricted to
+// only that class on write routes that opt into enforceClassScope.
+// 'admin' remains the existing, unrestricted staff account. Subject-
+// scoped teachers ('subject_teacher', per the addendum) aren't wired
+// into any enforcement yet — out of scope for now, flagged for later.
+const ALLOWED_STAFF_ROLES = ['admin', 'class_teacher'];
 
 router.use(async (req, res, next) => {
   try {
@@ -91,7 +99,7 @@ function actorInfo(req) {
   };
 }
 
-const publicStaffFields = `id, school_id, full_name, email, phone, role, status, force_password_change, created_by_type, last_login_at, deactivated_at, created_at`;
+const publicStaffFields = `id, school_id, full_name, email, phone, role, class_id, status, force_password_change, created_by_type, last_login_at, deactivated_at, created_at`;
 
 /**
  * @route   GET /api/staff/admins
@@ -102,7 +110,12 @@ const publicStaffFields = `id, school_id, full_name, email, phone, role, status,
 router.get('/admins', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT ${publicStaffFields} FROM staff WHERE school_id = $1 ORDER BY created_at DESC`,
+      `SELECT s.id, s.school_id, s.full_name, s.email, s.phone, s.role, s.class_id, c.class_name,
+              s.status, s.force_password_change, s.created_by_type, s.last_login_at, s.deactivated_at, s.created_at
+       FROM staff s
+       LEFT JOIN classes c ON c.id = s.class_id
+       WHERE s.school_id = $1
+       ORDER BY s.created_at DESC`,
       [req.user.schoolId]
     );
 
@@ -132,7 +145,11 @@ router.get('/admins', async (req, res) => {
 router.get('/admins/:staffId', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT ${publicStaffFields} FROM staff WHERE id = $1 AND school_id = $2`,
+      `SELECT s.id, s.school_id, s.full_name, s.email, s.phone, s.role, s.class_id, c.class_name,
+              s.status, s.force_password_change, s.created_by_type, s.last_login_at, s.deactivated_at, s.created_at
+       FROM staff s
+       LEFT JOIN classes c ON c.id = s.class_id
+       WHERE s.id = $1 AND s.school_id = $2`,
       [req.params.staffId, req.user.schoolId]
     );
     if (result.rows.length === 0) {
@@ -151,14 +168,27 @@ router.get('/admins/:staffId', async (req, res) => {
  *          immediately with a temp password and emails the credentials;
  *          the new admin must change the password on first login.
  * @access  Private (OWNER ONLY — admins cannot create other admins)
- * @body    { fullName, email, phone? }
+ * @body    { fullName, email, phone?, role?, classId?, className? }
+ *          role: 'admin' (default) | 'class_teacher'.
+ *          classId / className: only meaningful for 'class_teacher' —
+ *          className is what a country-scoped picker (GET /api/classes)
+ *          hands back (e.g. "GHS 1"); it's resolved/created against
+ *          this school's own `classes` table. classId is used as-is if
+ *          you already have this school's real class id. Optional per
+ *          addendum §3.2 — a class_teacher can be created without one
+ *          and assigned later via PATCH /admins/:staffId/class.
  */
 router.post('/admins', authMiddleware.requireOwner, async (req, res) => {
   const client = await pool.connect();
   try {
-    const { fullName, email, phone } = req.body;
+    const { fullName, email, phone, role, classId, className } = req.body;
     if (!fullName || !email) {
       return res.status(400).json({ success: false, error: 'fullName and email are required.' });
+    }
+
+    const resolvedRole = role || 'admin';
+    if (!ALLOWED_STAFF_ROLES.includes(resolvedRole)) {
+      return res.status(400).json({ success: false, error: `role must be one of: ${ALLOWED_STAFF_ROLES.join(', ')}` });
     }
 
     const normalizedEmail = email.trim().toLowerCase();
@@ -177,20 +207,30 @@ router.post('/admins', authMiddleware.requireOwner, async (req, res) => {
       return res.status(409).json({ success: false, error: 'This email belongs to the school owner account.' });
     }
 
+    let resolvedClass = null;
+    if (classId || className) {
+      try {
+        resolvedClass = await resolveClassForSchool({ classId, className, schoolId: req.user.schoolId, client });
+      } catch (classErr) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ success: false, error: classErr.message });
+      }
+    }
+
     const tempPassword = generateTempPassword();
     const passwordHash = await bcrypt.hash(tempPassword, 10);
     const { actorType, actorStaffId } = actorInfo(req);
 
     const insertResult = await client.query(
-      `INSERT INTO staff (school_id, full_name, email, phone, role, password_hash, status, force_password_change, created_by_type, created_by_staff_id)
-       VALUES ($1, $2, $3, $4, 'admin', $5, 'password_reset_required', true, $6, $7)
+      `INSERT INTO staff (school_id, full_name, email, phone, role, class_id, password_hash, status, force_password_change, created_by_type, created_by_staff_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'password_reset_required', true, $8, $9)
        RETURNING ${publicStaffFields}`,
-      [req.user.schoolId, fullName.trim(), normalizedEmail, phone || null, passwordHash, actorType, actorStaffId]
+      [req.user.schoolId, fullName.trim(), normalizedEmail, phone || null, resolvedRole, resolvedClass?.id || null, passwordHash, actorType, actorStaffId]
     );
 
     await client.query('COMMIT');
 
-    const newStaff = insertResult.rows[0];
+    const newStaff = { ...insertResult.rows[0], class_name: resolvedClass?.class_name || null };
     const schoolName = schoolResult.rows[0].name;
 
     await logStaffAudit({
@@ -199,7 +239,7 @@ router.post('/admins', authMiddleware.requireOwner, async (req, res) => {
       actorStaffId,
       action: 'staff.created',
       targetStaffId: newStaff.id,
-      details: { method: 'admin_assisted', email: normalizedEmail },
+      details: { method: 'admin_assisted', email: normalizedEmail, role: resolvedRole, classId: resolvedClass?.id || null },
     });
 
     try {
@@ -241,13 +281,19 @@ router.post('/admins', authMiddleware.requireOwner, async (req, res) => {
  * @desc    Path B — generate a self-registration code for a new admin.
  *          The invitee redeems it via POST /api/staff-auth/redeem-code.
  * @access  Private (OWNER ONLY — admins cannot invite other admins)
- * @body    { email, fullName?, phone?, expiresInHours? }
+ * @body    { email, fullName?, phone?, expiresInHours?, role?, classId?, className? }
+ *          role/classId/className — same meaning as POST /admins.
  */
 router.post('/admins/invite', authMiddleware.requireOwner, async (req, res) => {
   try {
-    const { email, fullName, phone, expiresInHours } = req.body;
+    const { email, fullName, phone, expiresInHours, role, classId, className } = req.body;
     if (!email) {
       return res.status(400).json({ success: false, error: 'email is required.' });
+    }
+
+    const resolvedRole = role || 'admin';
+    if (!ALLOWED_STAFF_ROLES.includes(resolvedRole)) {
+      return res.status(400).json({ success: false, error: `role must be one of: ${ALLOWED_STAFF_ROLES.join(', ')}` });
     }
 
     const normalizedEmail = email.trim().toLowerCase();
@@ -265,6 +311,15 @@ router.post('/admins/invite', authMiddleware.requireOwner, async (req, res) => {
       return res.status(409).json({ success: false, error: 'A pending invite already exists for this email.' });
     }
 
+    let resolvedClass = null;
+    if (classId || className) {
+      try {
+        resolvedClass = await resolveClassForSchool({ classId, className, schoolId: req.user.schoolId });
+      } catch (classErr) {
+        return res.status(400).json({ success: false, error: classErr.message });
+      }
+    }
+
     let code = generateInviteCode();
     // Vanishingly unlikely, but guard the unique constraint anyway.
     for (let attempts = 0; attempts < 5; attempts++) {
@@ -278,13 +333,13 @@ router.post('/admins/invite', authMiddleware.requireOwner, async (req, res) => {
     const { actorType, actorStaffId } = actorInfo(req);
 
     const result = await pool.query(
-      `INSERT INTO staff_invite_codes (school_id, code, full_name, email, phone, role, status, created_by_type, created_by_staff_id, expires_at)
-       VALUES ($1, $2, $3, $4, $5, 'admin', 'pending', $6, $7, $8)
-       RETURNING id, code, full_name, email, phone, role, status, expires_at, created_at`,
-      [req.user.schoolId, code, fullName || null, normalizedEmail, phone || null, actorType, actorStaffId, expiresAt]
+      `INSERT INTO staff_invite_codes (school_id, code, full_name, email, phone, role, class_id, status, created_by_type, created_by_staff_id, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10)
+       RETURNING id, code, full_name, email, phone, role, class_id, status, expires_at, created_at`,
+      [req.user.schoolId, code, fullName || null, normalizedEmail, phone || null, resolvedRole, resolvedClass?.id || null, actorType, actorStaffId, expiresAt]
     );
 
-    const invite = result.rows[0];
+    const invite = { ...result.rows[0], class_name: resolvedClass?.class_name || null };
 
     await logStaffAudit({
       schoolId: req.user.schoolId,
@@ -315,6 +370,77 @@ router.post('/admins/invite', authMiddleware.requireOwner, async (req, res) => {
   } catch (error) {
     console.error('❌ [staff-management] invite error:', error.message);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * @route   POST /api/staff/admins/invite/:inviteId/resend
+ * @desc    Re-send an existing invite code by email, and refresh its
+ *          expiry — covers both "they lost the message" and "the code
+ *          expired before they used it" without generating a brand new
+ *          code (which would also mean a new email/link for them to
+ *          confuse with the old one). Only works on a still-pending
+ *          (not used, not revoked) invite; a used/revoked one needs a
+ *          fresh invite via POST /admins/invite instead.
+ * @access  Private (OWNER ONLY — same hierarchy rule as invite/create)
+ * @body    { expiresInHours? } — default 72, same as invite creation.
+ */
+router.post('/admins/invite/:inviteId/resend', authMiddleware.requireOwner, async (req, res) => {
+  try {
+    const { expiresInHours } = req.body || {};
+    const hours = Number.isFinite(Number(expiresInHours)) && Number(expiresInHours) > 0 ? Number(expiresInHours) : 72;
+    const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000);
+
+    const inviteResult = await pool.query(
+      `UPDATE staff_invite_codes SET expires_at = $1
+       WHERE id = $2 AND school_id = $3 AND status = 'pending'
+       RETURNING id, code, full_name, email, phone, role, class_id, status, expires_at, created_at`,
+      [expiresAt, req.params.inviteId, req.user.schoolId]
+    );
+
+    if (inviteResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'No pending invite found with that id. It may have already been used or revoked — generate a new invite instead.',
+      });
+    }
+
+    const invite = inviteResult.rows[0];
+    const schoolResult = await pool.query('SELECT name FROM schools WHERE id = $1', [req.user.schoolId]);
+    const schoolName = schoolResult.rows[0]?.name || 'your school';
+
+    try {
+      await sendMail(invite.email, `Reminder: you're invited to join ${schoolName} on Sabino Edu`, `
+        <div style="font-family: sans-serif; border: 1px solid #ddd; padding: 20px; max-width: 480px; margin: auto;">
+          <h2 style="color: #333;">You're invited</h2>
+          <p>This is a reminder that you've been invited to join <strong>${schoolName}</strong> on Sabino Edu.</p>
+          <p>Open the Sabino Edu app, choose "I have an invite code", and enter:</p>
+          <h1 style="color: #4A90E2; letter-spacing: 3px; font-size: 28px;">${invite.code}</h1>
+          <p style="color: #888; font-size: 13px;">This code now expires in ${hours} hours and can only be used once.</p>
+        </div>
+      `);
+    } catch (mailErr) {
+      console.error('⚠️ [staff-management] Failed to re-email invite code:', mailErr.message);
+      return res.status(502).json({
+        success: false,
+        error: 'The invite was refreshed but the reminder email could not be sent. Share the code directly instead.',
+        data: invite,
+      });
+    }
+
+    const { actorType, actorStaffId } = actorInfo(req);
+    await logStaffAudit({
+      schoolId: req.user.schoolId,
+      actorType,
+      actorStaffId,
+      action: 'staff.invite_resent',
+      details: { inviteId: invite.id, email: invite.email },
+    });
+
+    res.json({ success: true, message: `Invite resent to ${invite.email}.`, data: invite });
+  } catch (error) {
+    console.error('❌ [staff-management] resend invite error:', error.message);
+    res.status(500).json({ success: false, error: 'Failed to resend invite.' });
   }
 });
 
@@ -388,27 +514,124 @@ router.patch('/admins/:staffId/reactivate', authMiddleware.requireOwner, async (
 });
 
 /**
- * @route   DELETE /api/staff/admins/:staffId
- * @desc    Permanently remove an admin account. Owner-only — hierarchy
- *          rule ("the new admin route cannot delete student or any
- *          data", which naturally extends to not being able to delete
- *          *other admins* either).
- * @access  Private (OWNER ONLY)
+ * @route   PATCH /api/staff/admins/:staffId/class
+ * @desc    Assign, change, or clear a class_teacher's class. This is
+ *          how "GHS 1 teacher" gets scoped after account creation, or
+ *          re-scoped later (new term, different class). Only meaningful
+ *          for role 'class_teacher' — silently allowed for 'admin' too
+ *          (it just won't do anything, since enforceClassScope only
+ *          reads classId for staffRole === 'class_teacher'), which
+ *          avoids forcing the caller to know a staff member's role
+ *          before calling this.
+ * @access  Private (OWNER ONLY — same hierarchy rule as create/invite)
+ * @body    { classId?, className?, clear? }
+ *          Pass clear: true (or classId: null with no className) to
+ *          remove the assignment — e.g. a teacher leaving the class
+ *          mid-term shouldn't stay locked to it.
  */
-router.delete('/admins/:staffId', authMiddleware.requireOwner, async (req, res) => {
+router.patch('/admins/:staffId/class', authMiddleware.requireOwner, async (req, res) => {
   try {
-    const result = await pool.query(
-      `DELETE FROM staff WHERE id = $1 AND school_id = $2 RETURNING id, full_name, email`,
-      [req.params.staffId, req.user.schoolId]
-    );
-    if (result.rows.length === 0) {
+    const { classId, className, clear } = req.body || {};
+
+    const staffCheck = await pool.query('SELECT id, role FROM staff WHERE id = $1 AND school_id = $2', [req.params.staffId, req.user.schoolId]);
+    if (staffCheck.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'Admin account not found.' });
     }
-    await logStaffAudit({ schoolId: req.user.schoolId, actorType: 'owner', action: 'staff.deleted', targetStaffId: result.rows[0].id, details: { email: result.rows[0].email } });
-    res.json({ success: true, message: 'Admin account permanently deleted.' });
+
+    let resolvedClass = null;
+    if (!clear && (classId || className)) {
+      try {
+        resolvedClass = await resolveClassForSchool({ classId, className, schoolId: req.user.schoolId });
+      } catch (classErr) {
+        return res.status(400).json({ success: false, error: classErr.message });
+      }
+    } else if (!clear && !classId && !className) {
+      return res.status(400).json({ success: false, error: 'Provide classId or className, or clear: true to remove the assignment.' });
+    }
+
+    const result = await pool.query(
+      `UPDATE staff SET class_id = $1, updated_at = NOW()
+       WHERE id = $2 AND school_id = $3
+       RETURNING id, full_name, email, role, class_id`,
+      [resolvedClass?.id || null, req.params.staffId, req.user.schoolId]
+    );
+
+    const { actorType, actorStaffId } = actorInfo(req);
+    await logStaffAudit({
+      schoolId: req.user.schoolId,
+      actorType,
+      actorStaffId,
+      action: resolvedClass ? 'staff.class_assigned' : 'staff.class_cleared',
+      targetStaffId: result.rows[0].id,
+      details: { classId: resolvedClass?.id || null, className: resolvedClass?.class_name || null },
+    });
+
+    res.json({
+      success: true,
+      message: resolvedClass ? `Assigned to ${resolvedClass.class_name}.` : 'Class assignment cleared.',
+      data: { ...result.rows[0], class_name: resolvedClass?.class_name || null },
+    });
+  } catch (error) {
+    console.error('❌ [staff-management] class assignment error:', error.message);
+    res.status(500).json({ success: false, error: 'Failed to update class assignment.' });
+  }
+});
+
+/**
+ * @route   DELETE /api/staff/admins/:staffId
+ * @desc    Permanently remove a staff account.
+ *          - Owner: can delete anyone (admin or class_teacher).
+ *          - A full admin: can delete a class_teacher, but NOT another
+ *            admin — preserves the "admins cannot manage other admins"
+ *            hierarchy rule while letting them manage the teachers they
+ *            (or the owner) onboarded day-to-day.
+ *          - A class_teacher: cannot delete anyone.
+ * @access  Private (Owner, or an admin acting on a class_teacher)
+ */
+router.delete('/admins/:staffId', async (req, res) => {
+  try {
+    const targetCheck = await pool.query(
+      'SELECT id, role, full_name, email FROM staff WHERE id = $1 AND school_id = $2',
+      [req.params.staffId, req.user.schoolId]
+    );
+    if (targetCheck.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Staff account not found.' });
+    }
+    const target = targetCheck.rows[0];
+
+    // Tokens with no `role` field, or role !== 'admin', are the owner
+    // (see middleware/auth.js -> requireOwner). Any staff-issued token
+    // carries role: 'admin' regardless of job title — `staffRole` is
+    // what actually distinguishes 'admin' from 'class_teacher'.
+    const isOwner = !(req.user.type === 'school' && req.user.role === 'admin');
+    if (!isOwner) {
+      if (req.user.staffRole !== 'admin') {
+        return res.status(403).json({ success: false, error: 'Only the school owner or an admin can remove staff accounts.' });
+      }
+      if (target.role === 'admin') {
+        return res.status(403).json({ success: false, error: 'Only the school owner can remove another admin account.' });
+      }
+    }
+
+    await pool.query(`DELETE FROM staff WHERE id = $1 AND school_id = $2`, [req.params.staffId, req.user.schoolId]);
+
+    const { actorType, actorStaffId } = actorInfo(req);
+    await logStaffAudit({
+      schoolId: req.user.schoolId,
+      actorType,
+      actorStaffId,
+      action: 'staff.deleted',
+      targetStaffId: target.id,
+      details: { email: target.email, role: target.role },
+    });
+
+    res.json({
+      success: true,
+      message: `${target.role === 'class_teacher' ? 'Teacher' : 'Admin'} account permanently deleted.`,
+    });
   } catch (error) {
     console.error('❌ [staff-management] delete error:', error.message);
-    res.status(500).json({ success: false, error: 'Failed to delete admin account.' });
+    res.status(500).json({ success: false, error: 'Failed to delete staff account.' });
   }
 });
 
