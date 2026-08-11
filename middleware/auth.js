@@ -191,6 +191,73 @@ exports.checkSchoolOwnership = async (req, res, next) => {
   }
 };
 
+// HELPER: getTeacherClassScope
+//
+// A school-type token can now carry two extra, additive claims set at
+// login by routes/staff-onboarding/auth.js:
+//   - staffRole: the staff member's actual job title ('admin' |
+//     'class_teacher' | ...) — distinct from `role`, which stays the
+//     existing owner/admin PERMISSION tier and must not change meaning.
+//   - classId: the single class a 'class_teacher' is assigned to, if any.
+//
+// Returns the classId a request must be confined to, or null if the
+// account is unrestricted (the owner, a full admin, or a class_teacher
+// with no class assigned yet). Tokens issued before this feature has
+// neither claim, so they fall through to null (unrestricted) — no
+// behaviour change for existing sessions until they log in again.
+// ─────────────────────────────────────────────────────────────
+exports.getTeacherClassScope = (req) => {
+  if (req.user?.type !== 'school') return null;
+  if (req.user?.staffRole === 'class_teacher' && req.user?.classId) {
+    return req.user.classId;
+  }
+  return null;
+};
+
+// ─────────────────────────────────────────────────────────────
+// MIDDLEWARE: enforceClassScope(getRequestedClassId)
+//
+// For write routes that create/modify something tied to a specific
+// class (creating a student, enrolling a student, ...). If the
+// logged-in account is a class-scoped teacher, the class the request
+// is acting on MUST match their assigned class, or it's rejected.
+// Owners, full admins, and teachers with no class assigned pass
+// straight through unchanged.
+//
+// `getRequestedClassId(req)` returns the classId this specific request
+// touches (usually from req.body). If it returns null/undefined — the
+// route can't tell us which class is involved — a scoped teacher is
+// rejected (fail closed) rather than silently allowed school-wide
+// access; an unrestricted account is unaffected either way.
+//
+// Usage:
+//   router.post('/', ..., authMiddleware.enforceClassScope(req => req.body.classId), handler)
+// ─────────────────────────────────────────────────────────────
+exports.enforceClassScope = (getRequestedClassId) => (req, res, next) => {
+  const scopedClassId = exports.getTeacherClassScope(req);
+  if (!scopedClassId) return next();
+
+  const requestedClassId = getRequestedClassId(req);
+  if (requestedClassId === null || requestedClassId === undefined || requestedClassId === '') {
+    return res.status(403).json({
+      success: false,
+      error: 'Your account is restricted to your assigned class. Specify a class to continue.',
+      code: 'CLASS_SCOPE_REQUIRED',
+    });
+  }
+
+  if (Number(requestedClassId) !== Number(scopedClassId)) {
+    return res.status(403).json({
+      success: false,
+      error: 'You can only do this for your assigned class.',
+      code: 'CLASS_SCOPE_VIOLATION',
+    });
+  }
+
+  next();
+};
+
+// ─────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────
 // MIDDLEWARE 5: requireOwner
 // Added for the staff/admin hierarchy (routes/staff-onboarding).

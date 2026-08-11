@@ -932,7 +932,15 @@ router.get('/enrollments', authMiddleware.authenticateToken, authMiddleware.requ
       params.push(status);
     }
 
-    if (classId) {
+    // A class-scoped teacher only ever sees their own class's enrollments
+    // — an explicit classId filter from them is still honored, but only
+    // if it matches their assigned class (silently narrowed rather than
+    // erroring, since this is a read/filter, not a write).
+    const scopedClassId = authMiddleware.getTeacherClassScope(req);
+    if (scopedClassId) {
+      conditions.push(`e.class_id = $${paramIndex++}`);
+      params.push(scopedClassId);
+    } else if (classId) {
       conditions.push(`e.class_id = $${paramIndex++}`);
       params.push(classId);
     }
@@ -1132,6 +1140,23 @@ router.post('/bulk', authMiddleware.authenticateToken, authMiddleware.requireSch
 
     await client.query('BEGIN');
 
+    // A class-scoped teacher (see middleware/auth.js -> getTeacherClassScope)
+    // may only bulk-create students into their own assigned class — checked
+    // once, up front, so a single bad row rolls back the whole batch rather
+    // than partially succeeding.
+    const scopedClassId = authMiddleware.getTeacherClassScope(req);
+    if (scopedClassId) {
+      const offendingRow = students.findIndex((s) => Number(s.classId) !== Number(scopedClassId));
+      if (offendingRow !== -1) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({
+          success: false,
+          error: `Row ${offendingRow + 1}: you can only add students to your assigned class.`,
+          code: 'CLASS_SCOPE_VIOLATION',
+        });
+      }
+    }
+
     // Get school name for registration number prefix
     const schoolLookup = await client.query(
       'SELECT name FROM schools WHERE id = $1 LIMIT 1',
@@ -1164,15 +1189,19 @@ router.post('/bulk', authMiddleware.authenticateToken, authMiddleware.requireSch
         throw new Error(`Row ${index + 1}: Name and Class ID are required.`);
       }
 
-      // Verify classId belongs to this school (the class should already exist in classes table)
+      // Verify classId belongs to THIS school — `classes` is the real,
+      // school-scoped table (matches the FK enrollments.class_id
+      // actually references), not global_class_templates, which is a
+      // different, country-scoped id space. Clients should be sourcing
+      // classId from GET /api/classes/school, never GET /api/classes.
       const classCheck = await client.query(
-        'SELECT id FROM global_class_templates WHERE id = $1',
-        [s.classId]
+        'SELECT id FROM classes WHERE id = $1 AND school_id = $2',
+        [s.classId, schoolId]
       );
 
-      // if (classCheck.rows.length === 0) {
-      //   throw new Error(`Row ${index + 1}: Class ID ${s.classId} is invalid or does not belong to your school.`);
-      // }
+      if (classCheck.rows.length === 0) {
+        throw new Error(`Row ${index + 1}: Class ID ${s.classId} is invalid or does not belong to your school.`);
+      }
 
       // Create Student with auto-generated password "1234567890"
       const studentNum = s.studentNumber || `${schoolPrefix}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
@@ -1246,6 +1275,7 @@ router.post('/bulk', authMiddleware.authenticateToken, authMiddleware.requireSch
 
 
 router.post('/', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription,
+  authMiddleware.enforceClassScope((req) => req.body?.classId),
   auditRoute('student.created', (req, body) => ({
     type: 'student',
     id: body?.data?.student?.id,
@@ -1448,6 +1478,14 @@ router.get('/', authMiddleware.authenticateToken, authMiddleware.requireSchool, 
       return res.status(401).json({ success: false, message: "Unauthorized: No school ID found in token" });
     }
 
+    // A class-scoped teacher only ever sees their own class's roster —
+    // consistent with the write-side restriction on POST / and
+    // POST /enrollments/create above. Owners, full admins, and
+    // teachers with no class assigned see the whole school (unchanged).
+    const scopedClassId = authMiddleware.getTeacherClassScope(req);
+    const classFilterClause = scopedClassId ? 'AND e.class_id = $2' : '';
+    const queryParams = scopedClassId ? [schoolId, scopedClassId] : [schoolId];
+
     // This query selects ALL students belonging to the school.
     // It uses a subquery with DISTINCT ON to ensure each student appears only once,
     // picking their most recent enrollment information if they have multiple.
@@ -1471,13 +1509,13 @@ router.get('/', authMiddleware.authenticateToken, authMiddleware.requireSchool, 
         LEFT JOIN enrollments e ON s.id = e.student_id AND e.school_id = s.school_id
         LEFT JOIN global_class_templates gct ON e.class_id = gct.id
         LEFT JOIN academic_years ay ON e.session_id = ay.id
-        WHERE s.school_id = $1
+        WHERE s.school_id = $1 ${classFilterClause}
         ORDER BY s.id, ay.year_label DESC NULLS LAST
       ) AS unique_students
       ORDER BY last_name ASC, first_name ASC
     `;
 
-    const result = await pool.query(query, [schoolId]);
+    const result = await pool.query(query, queryParams);
 
     return res.status(200).json({
       success: true,
@@ -1554,6 +1592,25 @@ router.put('/:studentId', authMiddleware.authenticateToken, authMiddleware.requi
     const schoolId = req.user?.schoolId;
     const { studentId } = req.params;
     const data = req.body;
+
+    // A class-scoped teacher may only edit students currently enrolled
+    // in their own class. Checked here (rather than via
+    // enforceClassScope) because the relevant classId isn't in the
+    // request body — it's the student's *existing* enrollment.
+    const scopedClassId = authMiddleware.getTeacherClassScope(req);
+    if (scopedClassId) {
+      const enrollmentCheck = await pool.query(
+        `SELECT 1 FROM enrollments WHERE student_id = $1 AND school_id = $2 AND class_id = $3 LIMIT 1`,
+        [studentId, schoolId, scopedClassId]
+      );
+      if (enrollmentCheck.rows.length === 0) {
+        return res.status(403).json({
+          success: false,
+          error: 'You can only edit students in your assigned class.',
+          code: 'CLASS_SCOPE_VIOLATION',
+        });
+      }
+    }
 
     const result = await pool.query(
       `UPDATE students SET
@@ -1640,7 +1697,9 @@ router.delete('/:studentId', authMiddleware.authenticateToken, authMiddleware.re
  *            status: String (optional: "active", "promoted", "repeated", "transferred", "graduated")
  *          }
  */
-router.post('/enrollments/create', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription, async (req, res) => {
+router.post('/enrollments/create', authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription,
+  authMiddleware.enforceClassScope((req) => req.body?.classId),
+  async (req, res) => {
   try {
     const schoolId = req.user?.schoolId;
     const { studentId, classId, sessionId, status = 'active' } = req.body;

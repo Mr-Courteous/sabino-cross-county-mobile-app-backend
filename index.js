@@ -23,7 +23,8 @@ const publicNotifications = require('./routes/publicNotifications');
 const cronRouter = require('./routes/cron');
 const adminRouter = require('./routes/admin..js'); // Note: Imported as 'admin..js' due to the file's current name
 const { authRouter: staffAuthRouter, managementRouter: staffManagementRouter } = require('./routes/staff-onboarding');
-
+const teacherAiRouter = require('./routes/teacher-ai');
+const attendanceRouter = require('./routes/attendance');
 
 const app = express();
 app.set('trust proxy', 1); // Trust first hop (e.g., Vercel, Cloudflare, Nginx)
@@ -31,12 +32,11 @@ app.set('trust proxy', 1); // Trust first hop (e.g., Vercel, Cloudflare, Nginx)
 // Middleware - CORS first
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-secret'],
 }));
 
 app.use(express.json());
-
 // 2. Replace manual logging with Morgan
 // 'dev' gives you color-coded status logs and response times
 app.use(morgan('dev'));
@@ -100,6 +100,14 @@ app.use('/api/admin', adminRouter);
 // See routes/staff-onboarding/ for everything related to this feature.
 app.use('/api/staff-auth', staffAuthRouter);
 app.use('/api/staff', staffManagementRouter);
+
+// Teacher AI (Teaching Assistant) module — Scheme of Work, Lesson Plan,
+// Lesson Note, and the AI chat that drives them. See routes/teacher-ai/.
+app.use('/api/teacher-ai', teacherAiRouter);
+
+// Attendance Register module (daily/weekly roll call, weekly grid,
+// terminal summary, sign-off trail). See routes/attendance/.
+app.use('/api/attendance', attendanceRouter);
 
 
 // Public data endpoints (subjects, academic sessions, enrollments)

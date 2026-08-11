@@ -3,6 +3,48 @@ const router = express.Router();
 const pool = require('../database/db');
 const authMiddleware = require('../middleware/auth');
 
+/**
+ * Insert one class for a school, resilient to the `classes` table
+ * missing its (school_id, class_name) unique constraint on some live
+ * databases (tables created before that constraint existed — CREATE
+ * TABLE IF NOT EXISTS is a no-op on an existing table, so it never
+ * retroactively gets added). Without this fallback, `ON CONFLICT
+ * (school_id, class_name)` fails outright with Postgres error 42P10
+ * ("no unique or exclusion constraint matching the ON CONFLICT
+ * specification") instead of just skipping the duplicate.
+ *
+ * Returns the created row, or null if it already existed.
+ */
+async function insertClassResilient(db, schoolId, className, capacity) {
+  try {
+    const result = await db.query(
+      `INSERT INTO classes (school_id, class_name, capacity)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (school_id, class_name) DO NOTHING
+       RETURNING id, school_id, class_name, capacity, created_at`,
+      [schoolId, className, capacity || 50]
+    );
+    return result.rows[0] || null;
+  } catch (err) {
+    if (err.code !== '42P10') throw err;
+    // No matching unique constraint — fall back to a plain insert,
+    // guarded by our own existence check first.
+    const existing = await db.query('SELECT id FROM classes WHERE school_id = $1 AND class_name = $2', [schoolId, className]);
+    if (existing.rows.length > 0) return null;
+    try {
+      const plain = await db.query(
+        `INSERT INTO classes (school_id, class_name, capacity) VALUES ($1, $2, $3)
+         RETURNING id, school_id, class_name, capacity, created_at`,
+        [schoolId, className, capacity || 50]
+      );
+      return plain.rows[0];
+    } catch (insertErr) {
+      if (insertErr.code === '23505') return null; // lost a race, already exists
+      throw insertErr;
+    }
+  }
+}
+
 router.use(authMiddleware.authenticateToken);
 
 // Get all classes for authenticated school
@@ -52,6 +94,67 @@ router.get('/', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Classes Error:', error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+/**
+ * @route   GET /api/classes/school
+ * @desc    This school's OWN instantiated classes (the real `classes`
+ *          table — id, class_name, capacity). This is the id space
+ *          every write endpoint actually validates against
+ *          (enrollments.class_id, students.js, staff.class_id, ...) —
+ *          unlike GET /, which returns global_class_templates ids and
+ *          should only ever be used for DISPLAY NAMES, never as the
+ *          classId sent back to a write endpoint.
+ * @access  Private (Authenticated schools only)
+ * @query   none — school + country come from the token
+ */
+router.get('/school', async (req, res) => {
+  try {
+    const schoolId = req.user?.schoolId;
+    const countryId = req.user?.countryId;
+    const effectiveCountryId = (countryId === 22 ? 1 : countryId);
+
+    if (!schoolId) {
+      return res.status(401).json({ success: false, error: 'Authentication context missing. Please login again.' });
+    }
+
+    let result = await pool.query(
+      `SELECT id, class_name, capacity FROM classes WHERE school_id = $1 ORDER BY class_name ASC`,
+      [schoolId]
+    );
+
+    // Seed (or top up) this school's classes from that country's templates
+    // so the picker always reflects the full curriculum. Previously this
+    // only ran when the school had ZERO classes, so a school that already
+    // had a couple of rows (partial seed, manual creation before the full
+    // template set existed, a country-lookup hiccup at signup, etc.) would
+    // stay stuck on those few rows forever. Now we always diff against the
+    // template list and insert whatever's missing — insertClassResilient
+    // is already ON CONFLICT DO NOTHING, so existing classes are untouched.
+    if (countryId) {
+      const templates = await pool.query(
+        `SELECT display_name, capacity FROM global_class_templates WHERE country_id = $1 ORDER BY display_name ASC`,
+        [effectiveCountryId]
+      );
+      const existingNames = new Set(result.rows.map((r) => r.class_name));
+      const missingTemplates = templates.rows.filter((t) => !existingNames.has(t.display_name));
+
+      if (missingTemplates.length > 0) {
+        for (const template of missingTemplates) {
+          await insertClassResilient(pool, schoolId, template.display_name, template.capacity);
+        }
+        result = await pool.query(
+          `SELECT id, class_name, capacity FROM classes WHERE school_id = $1 ORDER BY class_name ASC`,
+          [schoolId]
+        );
+      }
+    }
+
+    res.status(200).json({ success: true, data: result.rows, count: result.rows.length });
+  } catch (error) {
+    console.error('❌ School Classes Error:', error);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
@@ -152,16 +255,10 @@ router.post('/initialize-from-templates', async (req, res) => {
     // Maps display_name → class_name and uses ON CONFLICT to prevent duplicates
     for (const template of templates.rows) {
       try {
-        const result = await client.query(
-          `INSERT INTO classes (school_id, class_name, capacity)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (school_id, class_name) DO NOTHING
-           RETURNING id, school_id, class_name, capacity, created_at`,
-          [schoolId, template.display_name, template.capacity || 50]
-        );
+        const created = await insertClassResilient(client, schoolId, template.display_name, template.capacity);
 
-        if (result.rows.length > 0) {
-          createdClasses.push(result.rows[0]);
+        if (created) {
+          createdClasses.push(created);
           console.log(`✓ Created class: ${template.display_name}`);
         } else {
           duplicateCount++;
@@ -248,15 +345,9 @@ router.post('/initialize', async (req, res) => {
     // Insert each template as a class for this school
     for (const template of templates.rows) {
       try {
-        const result = await client.query(
-          `INSERT INTO classes (school_id, class_name, capacity)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (school_id, class_name) DO NOTHING
-           RETURNING id, school_id, class_name, capacity, created_at`,
-          [schoolId, template.display_name, template.capacity || 50]
-        );
-        if (result.rows.length > 0) {
-          createdClasses.push(result.rows[0]);
+        const created = await insertClassResilient(client, schoolId, template.display_name, template.capacity);
+        if (created) {
+          createdClasses.push(created);
         }
       } catch (innerError) {
         // Skip classes that already exist (UNIQUE constraint on school_id, class_name)

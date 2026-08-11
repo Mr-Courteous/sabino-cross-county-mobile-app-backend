@@ -75,6 +75,18 @@ function generateStaffToken(staff, countryId = null) {
     name: staff.full_name,
     email: staff.email,
   };
+  // Additive claims for class-scoped teachers (see middleware/auth.js
+  // -> getTeacherClassScope). `staffRole` is the ACTUAL job title
+  // ('admin' | 'class_teacher'), kept separate from `role` above (the
+  // owner/admin PERMISSION tier) so requireOwner's existing
+  // `role === 'admin'` check is untouched. `classId` is only ever
+  // present when staffRole is 'class_teacher' and a class was assigned.
+  if (staff.role) {
+    payload.staffRole = staff.role;
+  }
+  if (staff.class_id) {
+    payload.classId = staff.class_id;
+  }
   // Same country lookup the owner token carries (see routes/auth.js ->
   // generateToken) — a school's country doesn't change based on which
   // staff member is logged in, so admins need it too for any
@@ -116,7 +128,13 @@ router.post('/login', loginLimiter, async (req, res) => {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    const result = await pool.query('SELECT * FROM staff WHERE email = $1', [normalizedEmail]);
+    const result = await pool.query(
+      `SELECT s.*, c.class_name
+       FROM staff s
+       LEFT JOIN classes c ON c.id = s.class_id
+       WHERE s.email = $1`,
+      [normalizedEmail]
+    );
     const staff = result.rows[0];
 
     if (!staff || !staff.password_hash) {
@@ -153,6 +171,9 @@ router.post('/login', loginLimiter, async (req, res) => {
           name: staff.full_name,
           type: 'school',
           role: 'admin',
+          staffRole: staff.role,
+          classId: staff.class_id || null,
+          className: staff.class_name || null,
           countryId,
         },
         forcePasswordChange: staff.force_password_change === true,
@@ -174,7 +195,11 @@ router.get('/me', authMiddleware.authenticateToken, authMiddleware.requireSchool
   try {
     if (req.user.role === 'admin' && req.user.staffId) {
       const result = await pool.query(
-        'SELECT id, school_id, full_name, email, phone, role, status, force_password_change, last_login_at, created_at FROM staff WHERE id = $1',
+        `SELECT s.id, s.school_id, s.full_name, s.email, s.phone, s.role, s.class_id, c.class_name,
+                s.status, s.force_password_change, s.last_login_at, s.created_at
+         FROM staff s
+         LEFT JOIN classes c ON c.id = s.class_id
+         WHERE s.id = $1`,
         [req.user.staffId]
       );
       if (result.rows.length === 0) {
@@ -190,6 +215,9 @@ router.get('/me', authMiddleware.authenticateToken, authMiddleware.requireSchool
           email: staff.email,
           phone: staff.phone,
           role: 'admin',
+          staffRole: staff.role,
+          classId: staff.class_id || null,
+          className: staff.class_name || null,
           isOwner: false,
           status: staff.status,
           forcePasswordChange: staff.force_password_change,
@@ -489,10 +517,10 @@ router.post('/redeem-code', async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 10);
 
     const staffResult = await client.query(
-      `INSERT INTO staff (school_id, full_name, email, phone, role, password_hash, status, force_password_change, created_by_type, created_by_staff_id)
-       VALUES ($1, $2, $3, $4, $5, $6, 'active', false, $7, $8)
-       RETURNING id, school_id, full_name, email, role, status, created_at`,
-      [invite.school_id, resolvedName, invite.email, phone || invite.phone || null, invite.role, passwordHash, invite.created_by_type, invite.created_by_staff_id]
+      `INSERT INTO staff (school_id, full_name, email, phone, role, class_id, password_hash, status, force_password_change, created_by_type, created_by_staff_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', false, $8, $9)
+       RETURNING id, school_id, full_name, email, role, class_id, status, created_at`,
+      [invite.school_id, resolvedName, invite.email, phone || invite.phone || null, invite.role, invite.class_id || null, passwordHash, invite.created_by_type, invite.created_by_staff_id]
     );
 
     await client.query(
@@ -503,6 +531,11 @@ router.post('/redeem-code', async (req, res) => {
     await client.query('COMMIT');
 
     const staff = staffResult.rows[0];
+    let className = null;
+    if (staff.class_id) {
+      const classLookup = await pool.query('SELECT class_name FROM classes WHERE id = $1', [staff.class_id]);
+      className = classLookup.rows[0]?.class_name || null;
+    }
 
     await logStaffAudit({
       schoolId: staff.school_id,
@@ -514,7 +547,7 @@ router.post('/redeem-code', async (req, res) => {
     });
 
     const countryId = await lookupCountryId(staff.school_id);
-    const token = generateStaffToken({ id: staff.id, school_id: staff.school_id, full_name: staff.full_name, email: staff.email }, countryId);
+    const token = generateStaffToken(staff, countryId);
 
     res.status(201).json({
       success: true,
@@ -528,6 +561,9 @@ router.post('/redeem-code', async (req, res) => {
           name: staff.full_name,
           type: 'school',
           role: 'admin',
+          staffRole: staff.role,
+          classId: staff.class_id || null,
+          className,
           countryId,
         }
       }
