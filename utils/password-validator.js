@@ -9,8 +9,7 @@
  * - At least one lowercase letter
  * - At least one number
  * - At least one special symbol
- * - Minimum 8 characters
- * 
+ * - Minimum 8 characters adnd alll
  * @param {string} password - The password to validate
  * @returns {Object} - { isValid: boolean, error: string }
  */
