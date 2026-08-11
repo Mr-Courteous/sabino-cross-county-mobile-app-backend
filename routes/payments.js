@@ -11,7 +11,7 @@ require('dotenv').config();
 const FLW_SECRET_KEY = process.env.FLW_SECRET_KEY;
 const FLW_WEBHOOK_SECRET = process.env.FLW_WEBHOOK_SECRET;
 
-const PLAN_AMOUNT = 29500;
+const PLAN_AMOUNT = 7320;
 const PLAN_CURRENCY = 'NGN';
 const PLAN_MONTHS = 4;
 
