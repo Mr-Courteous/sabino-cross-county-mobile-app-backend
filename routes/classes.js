@@ -125,22 +125,31 @@ router.get('/school', async (req, res) => {
       [schoolId]
     );
 
-    // First time this school has ever asked for its own class list —
-    // seed it from that country's templates so the picker isn't empty
-    // and the caller doesn't have to know to call
-    // /initialize-from-templates first.
-    if (result.rows.length === 0 && countryId) {
+    // Seed (or top up) this school's classes from that country's templates
+    // so the picker always reflects the full curriculum. Previously this
+    // only ran when the school had ZERO classes, so a school that already
+    // had a couple of rows (partial seed, manual creation before the full
+    // template set existed, a country-lookup hiccup at signup, etc.) would
+    // stay stuck on those few rows forever. Now we always diff against the
+    // template list and insert whatever's missing — insertClassResilient
+    // is already ON CONFLICT DO NOTHING, so existing classes are untouched.
+    if (countryId) {
       const templates = await pool.query(
         `SELECT display_name, capacity FROM global_class_templates WHERE country_id = $1 ORDER BY display_name ASC`,
         [effectiveCountryId]
       );
-      for (const template of templates.rows) {
-        await insertClassResilient(pool, schoolId, template.display_name, template.capacity);
+      const existingNames = new Set(result.rows.map((r) => r.class_name));
+      const missingTemplates = templates.rows.filter((t) => !existingNames.has(t.display_name));
+
+      if (missingTemplates.length > 0) {
+        for (const template of missingTemplates) {
+          await insertClassResilient(pool, schoolId, template.display_name, template.capacity);
+        }
+        result = await pool.query(
+          `SELECT id, class_name, capacity FROM classes WHERE school_id = $1 ORDER BY class_name ASC`,
+          [schoolId]
+        );
       }
-      result = await pool.query(
-        `SELECT id, class_name, capacity FROM classes WHERE school_id = $1 ORDER BY class_name ASC`,
-        [schoolId]
-      );
     }
 
     res.status(200).json({ success: true, data: result.rows, count: result.rows.length });
