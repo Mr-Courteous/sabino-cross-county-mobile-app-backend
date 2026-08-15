@@ -148,7 +148,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
       JOIN students s ON e.student_id = s.id
       JOIN schools sch ON s.school_id = sch.id
       LEFT JOIN school_preferences pref ON pref.school_id = sch.id
-      LEFT JOIN global_class_templates c ON e.class_id = c.id
+      LEFT JOIN classes c ON e.class_id = c.id
       LEFT JOIN scores sc ON sc.enrollment_id = e.id
         AND sc.term = $3 
         AND sc.session_id = $4
@@ -558,12 +558,12 @@ router.get('/search/students', authMiddleware.requireSchool, checkSubscription, 
         s.id as student_id,
         s.first_name, 
         s.last_name, 
-        g.display_name as class_name,
+        g.class_name as class_name,
         e.session_id,
         ay.year_label as session_name
       FROM students s
       JOIN enrollments e ON e.student_id = s.id
-      JOIN global_class_templates g ON e.class_id = g.id
+      JOIN classes g ON e.class_id = g.id
       JOIN academic_years ay ON e.session_id = ay.id
       WHERE s.school_id = $1 
         AND (s.first_name ILIKE $2 OR s.last_name ILIKE $2)
@@ -1100,7 +1100,7 @@ router.get('/preview/official-report/:enrollmentId', async (req, res) => {
         pref.stamp_url, 
         pref.theme_color, 
         pref.header_text,
-        c.display_name as class_name,
+        c.class_name as class_name,
         COALESCE(sub.subject_name, 'Unknown Subject') as subject_name,
         COALESCE(sc.ca1_score, 0) as ca1_score,
         COALESCE(sc.ca2_score, 0) as ca2_score,
@@ -1114,7 +1114,7 @@ router.get('/preview/official-report/:enrollmentId', async (req, res) => {
       JOIN students s ON e.student_id = s.id
       JOIN schools sch ON s.school_id = sch.id
       LEFT JOIN school_preferences pref ON pref.school_id = sch.id
-      LEFT JOIN global_class_templates c ON e.class_id = c.id
+      LEFT JOIN classes c ON e.class_id = c.id
       LEFT JOIN scores sc ON sc.enrollment_id = e.id
         AND sc.term = $3 
         AND sc.session_id = $4
@@ -1314,7 +1314,7 @@ router.get('/preview/student-grades/:enrollmentId', async (req, res) => {
       SELECT 
         s.first_name, s.last_name, s.registration_number as admission_number, s.photo,
         sch.name as school_name,
-        c.display_name as class_name,
+        c.class_name as class_name,
         pref.theme_color,
         pref.logo_url,
         sub.subject_name,
@@ -1324,7 +1324,7 @@ router.get('/preview/student-grades/:enrollmentId', async (req, res) => {
       JOIN students s ON e.student_id = s.id
       JOIN schools sch ON s.school_id = sch.id
       LEFT JOIN school_preferences pref ON pref.school_id = sch.id
-      LEFT JOIN global_class_templates c ON e.class_id = c.id
+      LEFT JOIN classes c ON e.class_id = c.id
       LEFT JOIN scores sc ON sc.enrollment_id = e.id AND sc.term = $3 AND sc.session_id = $4
       LEFT JOIN global_subjects sub ON sc.subject_id = sub.id
       LEFT JOIN academic_years ay ON sc.session_id = ay.id
@@ -1468,13 +1468,13 @@ router.get('/pdf/:enrollmentId', checkSubscription, async (req, res) => {
         s.photo as photo_url,
         sch.name as school_name,
         pref.logo_url, pref.stamp_url, pref.theme_color, pref.header_text,
-        c.display_name as class_name,
+        c.class_name as class_name,
         COALESCE(ay.session_name, '') as session_name
       FROM enrollments e
       JOIN students s ON e.student_id = s.id
       JOIN schools sch ON s.school_id = sch.id
       LEFT JOIN school_preferences pref ON pref.school_id = sch.id
-      LEFT JOIN global_class_templates c ON e.class_id = c.id
+      LEFT JOIN classes c ON e.class_id = c.id
       LEFT JOIN academic_years ay ON e.session_id = ay.id
       WHERE e.id = $1 AND e.school_id = $2
       LIMIT 1

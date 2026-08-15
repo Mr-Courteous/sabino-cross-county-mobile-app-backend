@@ -832,7 +832,7 @@ router.get('/my-grades', authMiddleware.requireStudent, checkSubscription, async
         s.total_score,
         s.teacher_remark,
         e.id as enrollment_id,
-        c.display_name as class_name,
+        c.class_name as class_name,
         s.total_score as student_total,
         (
           SELECT ROUND(AVG(s2.total_score), 1)
@@ -844,7 +844,7 @@ router.get('/my-grades', authMiddleware.requireStudent, checkSubscription, async
             AND s2.session_id = s.session_id
         ) as class_average
       FROM enrollments e
-      JOIN global_class_templates c ON e.class_id = c.id
+      JOIN classes c ON e.class_id = c.id
       LEFT JOIN scores s ON s.enrollment_id = e.id
         AND s.term = $3
         AND s.session_id = $4

@@ -637,10 +637,10 @@ router.get('/me/enrollments', authMiddleware.authenticateToken, authMiddleware.r
         ay.session_name as academic_session,
         e.status as enrollment_status,
         e.class_id,
-        gct.display_name as class_name,
+        c.class_name as class_name,
         e.created_at
       FROM enrollments e
-      JOIN global_class_templates gct ON e.class_id = gct.id
+      JOIN classes c ON e.class_id = c.id
       JOIN academic_years ay ON e.session_id = ay.id
       WHERE e.student_id = $1 AND e.school_id = $2
       ORDER BY ay.year_label DESC, e.created_at DESC`;
@@ -681,10 +681,10 @@ router.get('/me/enrollments/:sessionId', authMiddleware.authenticateToken, authM
         ay.session_name as academic_session,
         e.status as enrollment_status,
         e.class_id,
-        gct.display_name as class_name,
+        c.class_name as class_name,
         e.created_at
       FROM enrollments e
-      JOIN global_class_templates gct ON e.class_id = gct.id
+      JOIN classes c ON e.class_id = c.id
       JOIN academic_years ay ON e.session_id = ay.id
       WHERE e.student_id = $1 AND e.school_id = $2 AND ay.id = $3
       ORDER BY e.created_at DESC`;
@@ -972,7 +972,7 @@ router.get('/enrollments', authMiddleware.authenticateToken, authMiddleware.requ
         s.photo,
 
         -- Class details
-        gct.display_name        AS class_name,
+        c.class_name             AS class_name,
 
         -- Academic session details
         ay.session_name         AS academic_session,
@@ -980,11 +980,11 @@ router.get('/enrollments', authMiddleware.authenticateToken, authMiddleware.requ
 
       FROM enrollments e
       JOIN students              s   ON e.student_id  = s.id
-      JOIN global_class_templates gct ON e.class_id   = gct.id
+      JOIN classes                c ON e.class_id   = c.id
       JOIN academic_years        ay  ON e.session_id  = ay.id
 
       WHERE ${whereClause}
-      ORDER BY ay.year_label DESC, gct.display_name ASC, s.last_name ASC, s.first_name ASC
+      ORDER BY ay.year_label DESC, c.class_name ASC, s.last_name ASC, s.first_name ASC
     `;
 
     const result = await pool.query(query, params);
@@ -1041,11 +1041,11 @@ router.delete('/enrollments/:enrollmentId', authMiddleware.authenticateToken, au
       `SELECT 
          e.id, e.student_id, e.class_id, e.session_id, e.status,
          s.first_name, s.last_name,
-         gct.display_name AS class_name,
+         c.class_name AS class_name,
          ay.session_name  AS academic_session
        FROM enrollments e
        JOIN students               s   ON e.student_id = s.id
-       JOIN global_class_templates gct ON e.class_id   = gct.id
+       JOIN classes                c ON e.class_id   = c.id
        JOIN academic_years         ay  ON e.session_id = ay.id
        WHERE e.id = $1 AND e.school_id = $2`,
       [enrollmentId, schoolId]
@@ -1503,11 +1503,11 @@ router.get('/', authMiddleware.authenticateToken, authMiddleware.requireSchool, 
           e.id as enrollment_id,
           e.status as enrollment_status,
           e.class_id,
-          gct.display_name as class_name,
+          c.class_name as class_name,
           ay.year_label as academic_session
         FROM students s
         LEFT JOIN enrollments e ON s.id = e.student_id AND e.school_id = s.school_id
-        LEFT JOIN global_class_templates gct ON e.class_id = gct.id
+        LEFT JOIN classes c ON e.class_id = c.id
         LEFT JOIN academic_years ay ON e.session_id = ay.id
         WHERE s.school_id = $1 ${classFilterClause}
         ORDER BY s.id, ay.year_label DESC NULLS LAST
