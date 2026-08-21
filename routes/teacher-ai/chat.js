@@ -16,6 +16,7 @@ const OpenAI = require('openai');
 const authMiddleware = require('../../middleware/auth');
 const checkSubscription = require('../../middleware/checkSubscription');
 const { pool, ensureTeacherAiTables, getTeacherIdentity, isSameTeacher } = require('./db');
+const { getReferenceText } = require('./document-extract');
 
 const openai = new OpenAI({
   apiKey: process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY,
@@ -83,6 +84,16 @@ function parseAiReply(raw) {
     console.error('[teacher-ai/chat] Failed to parse structured block:', err.message);
     return { text, structured: null };
   }
+}
+
+// Owner, or a staff account whose specific job-role is 'admin'. Mirrors
+// the check in routes/document-library.js — needed here too so an
+// admin/owner can reference ANY teacher's pending submission, not only
+// their own documents.
+function isOwnerOrFullAdmin(req) {
+  const isStaffAccount = req.user?.type === 'school' && req.user?.role === 'admin';
+  if (!isStaffAccount) return true;
+  return req.user?.staffRole === 'admin';
 }
 
 router.use(authMiddleware.authenticateToken, authMiddleware.requireSchool, checkSubscription);
@@ -162,7 +173,7 @@ router.get('/:id', async (req, res) => {
 // ── POST / — send a message, get an AI reply ──
 router.post('/', async (req, res) => {
   try {
-    const { message, conversationId, contentType, contextRef, attachments } = req.body || {};
+    const { message, conversationId, contentType, contextRef, attachments, referenceDocumentId } = req.body || {};
 
     if (!message || typeof message !== 'string' || !message.trim()) {
       return res.status(400).json({ success: false, error: 'A message is required.' });
@@ -208,9 +219,38 @@ router.post('/', async (req, res) => {
       conversation = created.rows[0];
     }
 
-    // ── Append the user's message immediately, so it's never lost even
-    //    if the AI call below fails. ──
+    // ── Resolve a "generate from this uploaded file" reference, BEFORE
+    //    touching history — so a bad/inaccessible document errors out
+    //    cleanly with nothing partially saved. Only re-extracted once
+    //    per conversation (tracked in context_ref) so a long back-and-
+    //    forth doesn't re-download/re-parse the file every turn. ──
+    let referenceMessage = null;
+    let nextContextRef = conversation.context_ref || null;
+    if (referenceDocumentId && conversation.context_ref?.referenceDocumentId !== referenceDocumentId) {
+      try {
+        const ref = await getReferenceText(
+          referenceDocumentId,
+          req.user.schoolId,
+          identity,
+          isOwnerOrFullAdmin(req)
+        );
+        referenceMessage = {
+          role: 'user',
+          content: `Reference document — "${ref.title}" (${(ref.docType || '').replace(/_/g, ' ')}). Use this as the basis for what I ask next:\n\n${ref.text}`,
+          isReference: true,
+          referenceDocumentId,
+          createdAt: new Date().toISOString(),
+        };
+        nextContextRef = { ...(conversation.context_ref || {}), referenceDocumentId, referenceTitle: ref.title };
+      } catch (refErr) {
+        return res.status(400).json({ success: false, error: refErr.message, conversationId: conversation.id });
+      }
+    }
+
+    // ── Append the reference (if any) and the user's message, so
+    //    neither is ever lost even if the AI call below fails. ──
     const history = Array.isArray(conversation.messages) ? conversation.messages : [];
+    if (referenceMessage) history.push(referenceMessage);
     const userMessage = {
       role: 'user',
       content: message.trim(),
@@ -219,10 +259,10 @@ router.post('/', async (req, res) => {
     };
     history.push(userMessage);
 
-    await pool.query(`UPDATE ai_conversations SET messages = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, [
-      JSON.stringify(history),
-      conversation.id,
-    ]);
+    await pool.query(
+      `UPDATE ai_conversations SET messages = $1, context_ref = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
+      [JSON.stringify(history), nextContextRef ? JSON.stringify(nextContextRef) : null, conversation.id]
+    );
 
     // ── Call the AI ──
     const effectiveContentType = contentType || conversation.content_type || null;
