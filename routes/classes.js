@@ -13,29 +13,43 @@ const authMiddleware = require('../middleware/auth');
  * ("no unique or exclusion constraint matching the ON CONFLICT
  * specification") instead of just skipping the duplicate.
  *
+ * Name comparison is case-/whitespace-insensitive so "Primary 4",
+ * "primary 4 " etc. are treated as the same class — the exact-match
+ * comparison this used to do is what let duplicate rows form in the
+ * first place whenever a template name didn't byte-for-byte match
+ * what was already stored.
+ *
  * Returns the created row, or null if it already existed.
  */
 async function insertClassResilient(db, schoolId, className, capacity) {
+  const normalized = className.trim();
   try {
     const result = await db.query(
       `INSERT INTO classes (school_id, class_name, capacity)
        VALUES ($1, $2, $3)
        ON CONFLICT (school_id, class_name) DO NOTHING
        RETURNING id, school_id, class_name, capacity, created_at`,
-      [schoolId, className, capacity || 50]
+      [schoolId, normalized, capacity || 50]
     );
     return result.rows[0] || null;
   } catch (err) {
     if (err.code !== '42P10') throw err;
     // No matching unique constraint — fall back to a plain insert,
-    // guarded by our own existence check first.
-    const existing = await db.query('SELECT id FROM classes WHERE school_id = $1 AND class_name = $2', [schoolId, className]);
+    // guarded by our own existence check first. Caller is expected to
+    // hold the per-school advisory lock (see GET /school below) so
+    // this check-then-insert can't race with itself across concurrent
+    // requests, which is how duplicate class rows previously slipped
+    // through even with this guard in place.
+    const existing = await db.query(
+      `SELECT id FROM classes WHERE school_id = $1 AND LOWER(TRIM(class_name)) = LOWER($2)`,
+      [schoolId, normalized]
+    );
     if (existing.rows.length > 0) return null;
     try {
       const plain = await db.query(
         `INSERT INTO classes (school_id, class_name, capacity) VALUES ($1, $2, $3)
          RETURNING id, school_id, class_name, capacity, created_at`,
-        [schoolId, className, capacity || 50]
+        [schoolId, normalized, capacity || 50]
       );
       return plain.rows[0];
     } catch (insertErr) {
@@ -133,23 +147,55 @@ router.get('/school', async (req, res) => {
     // stay stuck on those few rows forever. Now we always diff against the
     // template list and insert whatever's missing — insertClassResilient
     // is already ON CONFLICT DO NOTHING, so existing classes are untouched.
+    //
+    // This whole check-then-insert phase runs inside a per-school
+    // advisory lock. Without it, two requests landing close together
+    // (e.g. two screens both loading /api/classes/school on mount)
+    // could both see the class as "missing" and both insert it — on a
+    // database missing the (school_id, class_name) unique constraint
+    // (see insertClassResilient above) there was nothing to stop that,
+    // which is exactly how duplicate "Primary 4"-type rows formed:
+    // different students ended up enrolled against different
+    // duplicate class ids that all display the same name.
     if (countryId) {
-      const templates = await pool.query(
-        `SELECT display_name, capacity FROM global_class_templates WHERE country_id = $1 ORDER BY display_name ASC`,
-        [effectiveCountryId]
-      );
-      const existingNames = new Set(result.rows.map((r) => r.class_name));
-      const missingTemplates = templates.rows.filter((t) => !existingNames.has(t.display_name));
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SELECT pg_advisory_xact_lock($1)', [schoolId]);
 
-      if (missingTemplates.length > 0) {
-        for (const template of missingTemplates) {
-          await insertClassResilient(pool, schoolId, template.display_name, template.capacity);
-        }
-        result = await pool.query(
-          `SELECT id, class_name, capacity FROM classes WHERE school_id = $1 ORDER BY class_name ASC`,
+        const current = await client.query(
+          `SELECT id, class_name FROM classes WHERE school_id = $1`,
           [schoolId]
         );
+        const templates = await client.query(
+          `SELECT display_name, capacity FROM global_class_templates WHERE country_id = $1 ORDER BY display_name ASC`,
+          [effectiveCountryId]
+        );
+        // Case-/whitespace-insensitive comparison — an exact-match Set
+        // here is what previously let a template re-seed itself every
+        // single load whenever the stored name differed by casing or
+        // stray whitespace from the template's display_name.
+        const existingNames = new Set(current.rows.map((r) => r.class_name.trim().toLowerCase()));
+        const missingTemplates = templates.rows.filter(
+          (t) => !existingNames.has(t.display_name.trim().toLowerCase())
+        );
+
+        for (const template of missingTemplates) {
+          await insertClassResilient(client, schoolId, template.display_name, template.capacity);
+        }
+
+        await client.query('COMMIT');
+      } catch (seedErr) {
+        await client.query('ROLLBACK');
+        console.error('❌ Class seeding error (non-fatal, returning existing classes):', seedErr.message);
+      } finally {
+        client.release();
       }
+
+      result = await pool.query(
+        `SELECT id, class_name, capacity FROM classes WHERE school_id = $1 ORDER BY class_name ASC`,
+        [schoolId]
+      );
     }
 
     res.status(200).json({ success: true, data: result.rows, count: result.rows.length });

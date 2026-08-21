@@ -22,7 +22,11 @@ const openai = new OpenAI({
   apiKey: process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY,
   baseURL: 'https://api.groq.com/openai/v1',
 });
-const AI_MODEL = 'llama-3.3-70b-versatile';
+// Groq deprecated/decommissioned llama-3.3-70b-versatile (announced
+// 2026-06-17, shut off 2026-08-16) — every call was failing with
+// `model_decommissioned` and getting swallowed into a generic 502
+// below. openai/gpt-oss-120b is Groq's own recommended replacement.
+const AI_MODEL = 'openai/gpt-oss-120b';
 
 // Mandatory disclaimer, per addendum §1.3 / §1.5 — "carries the
 // disclaimer ... wherever generated content is displayed, in chat and
@@ -284,7 +288,14 @@ router.post('/', async (req, res) => {
       });
       raw = completion.choices?.[0]?.message?.content || '';
     } catch (aiError) {
-      console.error('[teacher-ai/chat] AI call failed:', aiError.message);
+      // Log the actual Groq error body (model_decommissioned, invalid
+      // key, rate limit, etc.) — aiError.message alone is often just
+      // "400 status code (no body)" from the OpenAI SDK and hides the
+      // real cause. Check this log first when chasing a 502 here.
+      console.error(
+        '[teacher-ai/chat] AI call failed:',
+        aiError?.response?.data || aiError?.error || aiError.message
+      );
       return res.status(502).json({
         success: false,
         error: 'Sabino AI is temporarily unavailable. Please try again in a moment.',

@@ -245,7 +245,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
         const performanceSummary = data.map(r => `${r.subject_name}: ${r.total_score}/100`).join(", ");
 
         const aiCompletion = await openai.chat.completions.create({
-          model: "llama-3.3-70b-versatile",
+          model: "openai/gpt-oss-120b", // llama-3.3-70b-versatile was decommissioned by Groq on 2026-08-16
           messages: [{
             role: "system",
             content: `You are an expert school principal. Write a unique, VERY concise formal report card remark.
@@ -973,7 +973,7 @@ router.post('/regenerate-remark/:enrollmentId', authMiddleware.authenticateToken
     const performanceSummary = data.map(r => `${r.subject_name}: ${r.total_score}/100`).join(', ');
 
     const aiCompletion = await openai.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: 'openai/gpt-oss-120b', // llama-3.3-70b-versatile was decommissioned by Groq on 2026-08-16
       messages: [{
         role: 'system',
         content: `You are an expert school principal. Write a VERY concise formal report card remark.
