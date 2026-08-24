@@ -30,7 +30,8 @@
     "pdf-parse": "^2.4.5",
     "pdfkit": "^0.17.2",
     "pdfkit-table": "^0.1.99",
-    "pg": "^8.11.3"
+    "pg": "^8.11.3",
+    "unpdf": "^1.8.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
