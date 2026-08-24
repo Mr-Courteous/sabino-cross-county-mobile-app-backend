@@ -172,4 +172,30 @@ function isSameTeacher(identity, row) {
   return row.teacher_type === identity.type && Number(row.teacher_id) === Number(identity.id);
 }
 
-module.exports = { pool, ensureTeacherAiTables, getTeacherIdentity, isSameTeacher };
+/**
+ * Keeps at most `keep` conversations per teacher, deleting the
+ * oldest (by updated_at) once that limit is exceeded. Called right
+ * after a new conversation is created, so the table never grows
+ * unbounded — a teacher's chat history is capped rather than kept
+ * forever, and the most recently-active threads are always the ones
+ * retained.
+ */
+async function pruneOldConversations(schoolId, identity, keep = 20) {
+  try {
+    await pool.query(
+      `DELETE FROM ai_conversations
+       WHERE id IN (
+         SELECT id FROM ai_conversations
+         WHERE school_id = $1 AND teacher_type = $2 AND teacher_id = $3
+         ORDER BY updated_at DESC
+         OFFSET $4
+       )`,
+      [schoolId, identity.type, identity.id, keep]
+    );
+  } catch (err) {
+    // Best effort — never let cleanup fail the chat request itself.
+    console.error('[teacher-ai/db] pruneOldConversations failed:', err.message);
+  }
+}
+
+module.exports = { pool, ensureTeacherAiTables, getTeacherIdentity, isSameTeacher, pruneOldConversations };

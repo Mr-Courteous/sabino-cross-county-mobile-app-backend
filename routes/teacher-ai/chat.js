@@ -15,8 +15,18 @@ const router = express.Router();
 const OpenAI = require('openai');
 const authMiddleware = require('../../middleware/auth');
 const checkSubscription = require('../../middleware/checkSubscription');
-const { pool, ensureTeacherAiTables, getTeacherIdentity, isSameTeacher } = require('./db');
+const { pool, ensureTeacherAiTables, getTeacherIdentity, isSameTeacher, pruneOldConversations } = require('./db');
 const { getReferenceText } = require('./document-extract');
+const { stripMarkdown, stripMarkdownDeep } = require('./format');
+
+// Per-teacher conversation history is capped at this many threads —
+// enough for the AI (and the teacher) to have useful recall of recent
+// work without the table growing unbounded. Oldest ones are dropped
+// automatically whenever a new conversation is started (see
+// pruneOldConversations below). Within a single conversation, all
+// messages are kept (a teacher can scroll back through the full
+// thread); only the number of separate conversations is limited.
+const MAX_CONVERSATIONS_PER_TEACHER = 20;
 
 const openai = new OpenAI({
   apiKey: process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY,
@@ -53,7 +63,9 @@ function buildSystemPrompt(lockedContentType) {
 - Lesson Plan: a plan for a single lesson or block of lessons (objectives, materials, activity flow, timing, evaluation).
 - Lesson Note: a classroom-ready note a teacher delivers from directly (topic, objectives, teacher activities, student activities, assessment).
 
-Be concise, practical and curriculum-appropriate. Reply to the teacher in plain, helpful prose first.`;
+Tone: write the way a measured, well-read colleague would — calm, professional and academic, the way a subject head would phrase things in a staffroom memo. Avoid hype, exclamation marks, emojis, slang and overly casual phrasing. Be concise, practical and curriculum-appropriate.
+
+Formatting: reply in plain prose sentences and paragraphs only. Do not use markdown syntax of any kind — no asterisks, underscores, hash symbols, backticks or bullet dashes. If you are listing several items, write them as a short run of plain numbered sentences (e.g. "1. First point. 2. Second point.") or as a normal paragraph, never as a bulleted or symbol-prefixed list.`;
 
   if (lockedContentType && SCHEMAS[lockedContentType]) {
     return `${base}
@@ -121,7 +133,7 @@ router.get('/', async (req, res) => {
        FROM ai_conversations
        WHERE school_id = $1 AND teacher_type = $2 AND teacher_id = $3
        ORDER BY updated_at DESC
-       LIMIT 50`,
+       LIMIT ${MAX_CONVERSATIONS_PER_TEACHER}`,
       [req.user.schoolId, identity.type, identity.id]
     );
     res.json({
@@ -221,6 +233,9 @@ router.post('/', async (req, res) => {
         ]
       );
       conversation = created.rows[0];
+      // A brand-new thread was just started — drop the oldest ones
+      // beyond the cap so history doesn't grow without bound.
+      await pruneOldConversations(req.user.schoolId, identity, MAX_CONVERSATIONS_PER_TEACHER);
     }
 
     // ── Resolve a "generate from this uploaded file" reference, BEFORE
@@ -303,7 +318,12 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const { text, structured } = parseAiReply(raw);
+    const { text: rawText, structured: rawStructured } = parseAiReply(raw);
+    // Defensive cleanup: strip any markdown the model produced anyway,
+    // since the app displays this text verbatim with no markdown
+    // renderer (see format.js for why).
+    const text = stripMarkdown(rawText);
+    const structured = rawStructured ? stripMarkdownDeep(rawStructured) : null;
     const resolvedContentType = (structured && structured.contentType) || effectiveContentType || null;
 
     const assistantMessage = {

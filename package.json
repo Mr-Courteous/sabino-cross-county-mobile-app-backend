@@ -21,11 +21,13 @@
     "jsonwebtoken": "^9.0.3",
     "jspdf": "^4.0.0",
     "jspdf-autotable": "^5.0.7",
+    "mammoth": "^1.12.1",
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.12",
     "openai": "^6.16.0",
+    "pdf-parse": "^2.4.5",
     "pdfkit": "^0.17.2",
     "pdfkit-table": "^0.1.99",
     "pg": "^8.11.3"
