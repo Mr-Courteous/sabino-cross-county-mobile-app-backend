@@ -11,7 +11,15 @@
 // the file's content can reach the model at all.
 //
 // Requires two extra dependencies not otherwise used by the app:
-//   npm install pdf-parse mammoth
+//   npm install unpdf mammoth
+//
+// NOTE: previously used `pdf-parse`, which pulls in a browser build of
+// pdfjs-dist that expects DOM globals (DOMMatrix/Path2D/ImageData) to
+// exist. Those aren't present in plain Node, so certain PDFs (ones that
+// hit font/rendering code paths) failed with "DOMMatrix is not defined"
+// — surfaced verbatim to the app via the catch block in chat.js. `unpdf`
+// ships a serverless PDF.js build made for Node/worker environments, so
+// it doesn't need those DOM globals at all.
 // ─────────────────────────────────────────────────────────────
 const pool = require('../../database/db');
 
@@ -49,9 +57,12 @@ async function extractTextFromRow(row) {
   const buffer = Buffer.from(await res.arrayBuffer());
 
   if (row.file_type === 'pdf') {
-    const pdfParse = require('pdf-parse');
-    const parsed = await pdfParse(buffer);
-    return parsed.text || '';
+    // unpdf is ESM-only — dynamic import() works fine from this CommonJS
+    // file (require() would not).
+    const { extractText, getDocumentProxy } = await import('unpdf');
+    const pdf = await getDocumentProxy(new Uint8Array(buffer));
+    const { text } = await extractText(pdf, { mergePages: true });
+    return Array.isArray(text) ? text.join('\n\n') : (text || '');
   }
 
   if (row.file_type === 'docx') {
@@ -60,7 +71,7 @@ async function extractTextFromRow(row) {
     return parsed.value || '';
   }
 
-  // Old binary .doc format — mammoth/pdf-parse can't read it.
+  // Old binary .doc format — mammoth/unpdf can't read it.
   throw new Error('This file is an old .doc format, which text extraction does not support. Please re-upload it as PDF or DOCX to use it as AI reference material.');
 }
 
@@ -77,8 +88,10 @@ async function getReferenceText(documentId, schoolId, identity, isOwnerOrFullAdm
     text = await extractTextFromRow(row);
   } catch (err) {
     // Re-throw dependency-missing errors with a clearer hint for the dev.
-    if (err.code === 'MODULE_NOT_FOUND') {
-      throw new Error('Reading PDF/DOCX files requires the pdf-parse and mammoth packages. Run: npm install pdf-parse mammoth');
+    // require() misses throw MODULE_NOT_FOUND; dynamic import() misses
+    // (used for the ESM-only `unpdf`) throw ERR_MODULE_NOT_FOUND.
+    if (err.code === 'MODULE_NOT_FOUND' || err.code === 'ERR_MODULE_NOT_FOUND') {
+      throw new Error('Reading PDF/DOCX files requires the unpdf and mammoth packages. Run: npm install unpdf mammoth');
     }
     throw err;
   }
