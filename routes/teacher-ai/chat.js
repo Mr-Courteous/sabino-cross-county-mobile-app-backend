@@ -38,6 +38,9 @@ const openai = new OpenAI({
 // `model_decommissioned` and getting swallowed into a generic 502
 // below. openai/gpt-oss-120b is Groq's own recommended replacement.
 const AI_MODEL = 'openai/gpt-oss-120b';
+// gpt-oss-120b is text-only. When a turn includes an image, the call is
+// routed to Groq's multimodal model instead (see buildChatMessages below).
+const VISION_MODEL = 'qwen/qwen3.6-27b';
 
 // Mandatory disclaimer, per addendum §1.3 / §1.5 — "carries the
 // disclaimer ... wherever generated content is displayed, in chat and
@@ -57,6 +60,19 @@ const ATTACHMENT_MIME_TO_EXT = {
   'application/msword': 'doc',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
 };
+// Images go through a separate path below (base64 data URL for the vision
+// model, not text extraction), but share the same upload endpoint/multer
+// config as documents.
+const IMAGE_MIME_TO_EXT = {
+  'image/jpeg': 'jpeg',
+  'image/jpg': 'jpeg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+};
+// Kept well under Groq's 20MB-per-request cap for image_url input, since
+// base64 inflates the raw file by ~33% and the request also carries the
+// system prompt + conversation history.
+const IMAGE_MAX_SIZE = 8 * 1024 * 1024; // 8MB
 const attachmentUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: ATTACHMENT_MAX_SIZE },
@@ -156,6 +172,25 @@ router.post('/attachments/extract', attachmentUpload.single('file'), async (req,
     }
 
     const originalName = req.file.originalname || 'file';
+
+    // ── Image path: no text extraction — just hand back a base64 data
+    //    URL the composer can attach as-is, for the vision model to read
+    //    directly when the message is sent (see buildChatMessages). ──
+    let imageExt = IMAGE_MIME_TO_EXT[req.file.mimetype];
+    if (!imageExt) {
+      const ext = (originalName.split('.').pop() || '').toLowerCase();
+      if (ext === 'jpg' || ext === 'jpeg') imageExt = 'jpeg';
+      else if (ext === 'png' || ext === 'webp') imageExt = ext;
+    }
+    if (imageExt) {
+      if (req.file.buffer.length > IMAGE_MAX_SIZE) {
+        return res.status(400).json({ success: false, error: 'That image is larger than the 8MB limit — try a smaller photo.' });
+      }
+      const mimeType = imageExt === 'jpeg' ? 'image/jpeg' : `image/${imageExt}`;
+      const imageDataUrl = `data:${mimeType};base64,${req.file.buffer.toString('base64')}`;
+      return res.json({ success: true, data: { name: originalName, fileType: 'image', imageDataUrl } });
+    }
+
     let fileType = ATTACHMENT_MIME_TO_EXT[req.file.mimetype];
     if (!fileType) {
       // Some mobile clients send a generic mimetype (e.g.
@@ -166,7 +201,7 @@ router.post('/attachments/extract', attachmentUpload.single('file'), async (req,
     if (!fileType) {
       return res.status(400).json({
         success: false,
-        error: "Sabino AI can only read PDF and Word (.docx) files right now.",
+        error: "Sabino AI can only read PDF, Word (.docx) and image (jpg/png/webp) files right now.",
       });
     }
 
@@ -334,15 +369,33 @@ router.post('/', async (req, res) => {
     //    each question they ask. ──
     const attachmentReferenceMessages = Array.isArray(attachments)
       ? attachments
-          .filter((a) => a && typeof a.text === 'string' && a.text.trim())
+          .filter((a) => a && ((typeof a.text === 'string' && a.text.trim()) || a.imageDataUrl))
           .slice(0, MAX_ATTACHMENTS_WITH_CONTENT)
-          .map((a) => ({
-            role: 'user',
-            content: `Attached file — "${a.name || 'Untitled'}". Use this as context for the message that follows:\n\n${a.text.trim()}`,
-            isReference: true,
-            attachmentName: a.name || null,
-            createdAt: new Date().toISOString(),
-          }))
+          .map((a) => {
+            if (a.imageDataUrl) {
+              // Multimodal content block — passed straight through to the
+              // vision model (see buildChatMessages). Plain gpt-oss-120b
+              // calls never see this shape since hasImage routes them to
+              // VISION_MODEL instead.
+              return {
+                role: 'user',
+                content: [
+                  { type: 'text', text: `Attached image — "${a.name || 'Untitled'}". Use this as context for the message that follows.` },
+                  { type: 'image_url', image_url: { url: a.imageDataUrl } },
+                ],
+                isReference: true,
+                attachmentName: a.name || null,
+                createdAt: new Date().toISOString(),
+              };
+            }
+            return {
+              role: 'user',
+              content: `Attached file — "${a.name || 'Untitled'}". Use this as context for the message that follows:\n\n${a.text.trim()}`,
+              isReference: true,
+              attachmentName: a.name || null,
+              createdAt: new Date().toISOString(),
+            };
+          })
       : [];
 
     // ── Append the reference(s) and the user's message, so none of it
@@ -357,7 +410,7 @@ router.post('/', async (req, res) => {
       // messages above — store only the label here so the same content
       // isn't duplicated twice in the conversation.
       attachments: Array.isArray(attachments)
-        ? attachments.map((a) => ({ type: a.type, name: a.name, hasContent: !!(a.text && a.text.trim()) }))
+        ? attachments.map((a) => ({ type: a.type, name: a.name, hasContent: !!((a.text && a.text.trim()) || a.imageDataUrl) }))
         : [],
       createdAt: new Date().toISOString(),
     };
@@ -372,17 +425,33 @@ router.post('/', async (req, res) => {
     const effectiveContentType = contentType || conversation.content_type || null;
     const systemPrompt = buildSystemPrompt(effectiveContentType);
 
-    // Last 20 turns of plain-text history is enough context for this
-    // use case and keeps the request small/fast on Groq.
-    const chatMessages = [
-      { role: 'system', content: systemPrompt },
-      ...history.slice(-20).map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
-    ];
+    // Last 20 turns of history is enough context for this use case and
+    // keeps the request small/fast on Groq. A message's `content` is
+    // normally a plain string, but an image-attachment reference message
+    // (above) stores a multimodal array instead — only the most recent
+    // one of those is kept intact; any earlier ones are collapsed down to
+    // their text part so the request stays within Groq's per-request
+    // image cap and doesn't balloon with old base64 data every turn.
+    const recentHistory = history.slice(-20);
+    let lastImageIdx = -1;
+    recentHistory.forEach((m, i) => {
+      if (Array.isArray(m.content) && m.content.some((c) => c && c.type === 'image_url')) lastImageIdx = i;
+    });
+    const hasImage = lastImageIdx !== -1;
+    const conversationMessages = recentHistory.map((m, i) => {
+      let content = m.content;
+      if (Array.isArray(content) && i !== lastImageIdx) {
+        const textOnly = content.filter((c) => c && c.type === 'text').map((c) => c.text).join('\n').trim();
+        content = textOnly || '[An image was attached here earlier in the conversation.]';
+      }
+      return { role: m.role === 'assistant' ? 'assistant' : 'user', content };
+    });
+    const chatMessages = [{ role: 'system', content: systemPrompt }, ...conversationMessages];
 
     let raw;
     try {
       const completion = await openai.chat.completions.create({
-        model: AI_MODEL,
+        model: hasImage ? VISION_MODEL : AI_MODEL,
         messages: chatMessages,
         temperature: 0.4,
       });
@@ -416,7 +485,7 @@ router.post('/', async (req, res) => {
       content: text,
       structured: structured || null,
       contentType: resolvedContentType,
-      model: AI_MODEL,
+      model: hasImage ? VISION_MODEL : AI_MODEL,
       createdAt: new Date().toISOString(),
     };
     history.push(assistantMessage);
