@@ -24,6 +24,10 @@
 const pool = require('../../database/db');
 
 const MAX_REFERENCE_CHARS = 12000; // keeps the Groq prompt a sane size
+// Ad-hoc chat attachments (routes/teacher-ai/chat.js POST /attachments/extract)
+// get a smaller cap than a pinned reference doc, since a single message can
+// carry more than one of these and they all go into the same prompt.
+const MAX_ATTACHMENT_CHARS = 8000;
 
 /**
  * Loads a document_library row by id, enforcing the same visibility
@@ -49,14 +53,12 @@ async function loadReferenceRow(documentId, schoolId, identity, isOwnerOrFullAdm
   return { row, error: null };
 }
 
-async function extractTextFromRow(row) {
-  const res = await fetch(row.file_url);
-  if (!res.ok) {
-    throw new Error(`Could not download the file (status ${res.status}).`);
-  }
-  const buffer = Buffer.from(await res.arrayBuffer());
-
-  if (row.file_type === 'pdf') {
+/**
+ * Shared by both entry points below: turns a raw file buffer into
+ * plain text. `fileType` is 'pdf' | 'docx' | 'doc'.
+ */
+async function extractTextFromBuffer(buffer, fileType) {
+  if (fileType === 'pdf') {
     // unpdf is ESM-only — dynamic import() works fine from this CommonJS
     // file (require() would not).
     const { extractText, getDocumentProxy } = await import('unpdf');
@@ -65,7 +67,7 @@ async function extractTextFromRow(row) {
     return Array.isArray(text) ? text.join('\n\n') : (text || '');
   }
 
-  if (row.file_type === 'docx') {
+  if (fileType === 'docx') {
     const mammoth = require('mammoth');
     const parsed = await mammoth.extractRawText({ buffer });
     return parsed.value || '';
@@ -75,9 +77,40 @@ async function extractTextFromRow(row) {
   throw new Error('This file is an old .doc format, which text extraction does not support. Please re-upload it as PDF or DOCX to use it as AI reference material.');
 }
 
+async function extractTextFromRow(row) {
+  const res = await fetch(row.file_url);
+  if (!res.ok) {
+    throw new Error(`Could not download the file (status ${res.status}).`);
+  }
+  const buffer = Buffer.from(await res.arrayBuffer());
+  return extractTextFromBuffer(buffer, row.file_type);
+}
+
+// require() misses throw MODULE_NOT_FOUND; dynamic import() misses (used
+// for the ESM-only `unpdf`) throw ERR_MODULE_NOT_FOUND — remap both to a
+// message that actually tells the dev what to do about it.
+function remapDependencyError(err) {
+  if (err.code === 'MODULE_NOT_FOUND' || err.code === 'ERR_MODULE_NOT_FOUND') {
+    return new Error('Reading PDF/DOCX files requires the unpdf and mammoth packages. Run: npm install unpdf mammoth');
+  }
+  return err;
+}
+
+function cleanExtractedText(rawText, maxChars) {
+  let text = (rawText || '').trim();
+  if (!text) {
+    throw new Error('No readable text was found in that file — it may be a scanned/image-only document.');
+  }
+  if (text.length > maxChars) {
+    text = text.slice(0, maxChars) + '\n\n[...truncated for length...]';
+  }
+  return text;
+}
+
 /**
- * Public entry point used by chat.js. Returns { text, title, docType }
- * on success, or throws an Error with a message safe to show the user.
+ * Public entry point used by chat.js for the "generate from this
+ * uploaded library file" flow. Returns { text, title, docType } on
+ * success, or throws an Error with a message safe to show the user.
  */
 async function getReferenceText(documentId, schoolId, identity, isOwnerOrFullAdminFlag) {
   const { row, error } = await loadReferenceRow(documentId, schoolId, identity, isOwnerOrFullAdminFlag);
@@ -87,24 +120,27 @@ async function getReferenceText(documentId, schoolId, identity, isOwnerOrFullAdm
   try {
     text = await extractTextFromRow(row);
   } catch (err) {
-    // Re-throw dependency-missing errors with a clearer hint for the dev.
-    // require() misses throw MODULE_NOT_FOUND; dynamic import() misses
-    // (used for the ESM-only `unpdf`) throw ERR_MODULE_NOT_FOUND.
-    if (err.code === 'MODULE_NOT_FOUND' || err.code === 'ERR_MODULE_NOT_FOUND') {
-      throw new Error('Reading PDF/DOCX files requires the unpdf and mammoth packages. Run: npm install unpdf mammoth');
-    }
-    throw err;
+    throw remapDependencyError(err);
   }
 
-  text = (text || '').trim();
-  if (!text) {
-    throw new Error('No readable text was found in that file — it may be a scanned/image-only document.');
-  }
-  if (text.length > MAX_REFERENCE_CHARS) {
-    text = text.slice(0, MAX_REFERENCE_CHARS) + '\n\n[...truncated for length...]';
-  }
-
+  text = cleanExtractedText(text, MAX_REFERENCE_CHARS);
   return { text, title: row.title, docType: row.doc_type };
 }
 
-module.exports = { getReferenceText };
+/**
+ * Public entry point used by chat.js's POST /attachments/extract — the
+ * composer's paperclip-attach flow. Takes an in-memory upload straight
+ * from multer (no document_library row, nothing persisted) and returns
+ * cleaned text, or throws an Error safe to show the user.
+ */
+async function extractUploadedFileText(buffer, fileType) {
+  let text;
+  try {
+    text = await extractTextFromBuffer(buffer, fileType);
+  } catch (err) {
+    throw remapDependencyError(err);
+  }
+  return cleanExtractedText(text, MAX_ATTACHMENT_CHARS);
+}
+
+module.exports = { getReferenceText, extractUploadedFileText };

@@ -12,11 +12,12 @@
 // ─────────────────────────────────────────────────────────────
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
 const OpenAI = require('openai');
 const authMiddleware = require('../../middleware/auth');
 const checkSubscription = require('../../middleware/checkSubscription');
 const { pool, ensureTeacherAiTables, getTeacherIdentity, isSameTeacher, pruneOldConversations } = require('./db');
-const { getReferenceText } = require('./document-extract');
+const { getReferenceText, extractUploadedFileText } = require('./document-extract');
 const { stripMarkdown, stripMarkdownDeep } = require('./format');
 
 // Per-teacher conversation history is capped at this many threads —
@@ -44,6 +45,26 @@ const AI_MODEL = 'openai/gpt-oss-120b';
 const DISCLAIMER = 'AI-generated content may contain errors. You are encouraged to review before use.';
 
 const VALID_CONTENT_TYPES = ['scheme_of_work', 'lesson_plan', 'lesson_note'];
+
+// ── Composer paperclip-attach flow (POST /attachments/extract, below) —
+//    mirrors the multer/mime setup already used in
+//    routes/document-library.js. Files are read straight into memory and
+//    turned into text; nothing here is ever persisted to document_library
+//    or blob storage, unlike a real library upload. ──
+const ATTACHMENT_MAX_SIZE = 20 * 1024 * 1024; // 20MB, same ceiling as document-library
+const ATTACHMENT_MIME_TO_EXT = {
+  'application/pdf': 'pdf',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+};
+const attachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: ATTACHMENT_MAX_SIZE },
+});
+// A chat message can carry more than one file attachment, but only the
+// first few get their content read into the AI prompt — keeps the
+// per-turn prompt bounded even if someone attaches a stack of files.
+const MAX_ATTACHMENTS_WITH_CONTENT = 3;
 
 const SCHEMAS = {
   scheme_of_work:
@@ -120,6 +141,45 @@ router.use(async (req, res, next) => {
   } catch (err) {
     console.error('❌ [teacher-ai/chat] Failed to ensure tables:', err.message);
     res.status(500).json({ success: false, error: 'Server initialization error.' });
+  }
+});
+
+// ── POST /attachments/extract — the composer's paperclip-attach button.
+//    Called once per file, right after picking it (before the teacher
+//    even hits send), so the chip can show a spinner then either
+//    "ready" or a clear error. Nothing here touches document_library —
+//    this is ad hoc, per-message content, not a saved library file. ──
+router.post('/attachments/extract', attachmentUpload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No file was received.' });
+    }
+
+    const originalName = req.file.originalname || 'file';
+    let fileType = ATTACHMENT_MIME_TO_EXT[req.file.mimetype];
+    if (!fileType) {
+      // Some mobile clients send a generic mimetype (e.g.
+      // application/octet-stream) — fall back to the file extension.
+      const ext = (originalName.split('.').pop() || '').toLowerCase();
+      if (ext === 'pdf' || ext === 'doc' || ext === 'docx') fileType = ext;
+    }
+    if (!fileType) {
+      return res.status(400).json({
+        success: false,
+        error: "Sabino AI can only read PDF and Word (.docx) files right now.",
+      });
+    }
+
+    const text = await extractUploadedFileText(req.file.buffer, fileType);
+    res.json({ success: true, data: { name: originalName, fileType, text } });
+  } catch (err) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ success: false, error: 'That file is larger than the 20MB limit.' });
+    }
+    // err.message here is always one of the user-safe strings thrown by
+    // extractUploadedFileText (old .doc format, scanned/empty PDF,
+    // missing dependency) — safe to return as-is.
+    res.status(400).json({ success: false, error: err.message || 'Could not read that file.' });
   }
 });
 
@@ -266,14 +326,39 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // ── Append the reference (if any) and the user's message, so
-    //    neither is ever lost even if the AI call below fails. ──
+    // ── Turn any paperclip-attached files that came with extracted text
+    //    (from POST /attachments/extract) into synthetic prior "user"
+    //    messages, same pattern as the library referenceMessage above —
+    //    except these are per-message, not pinned to the whole
+    //    conversation, since a teacher can attach a different file to
+    //    each question they ask. ──
+    const attachmentReferenceMessages = Array.isArray(attachments)
+      ? attachments
+          .filter((a) => a && typeof a.text === 'string' && a.text.trim())
+          .slice(0, MAX_ATTACHMENTS_WITH_CONTENT)
+          .map((a) => ({
+            role: 'user',
+            content: `Attached file — "${a.name || 'Untitled'}". Use this as context for the message that follows:\n\n${a.text.trim()}`,
+            isReference: true,
+            attachmentName: a.name || null,
+            createdAt: new Date().toISOString(),
+          }))
+      : [];
+
+    // ── Append the reference(s) and the user's message, so none of it
+    //    is ever lost even if the AI call below fails. ──
     const history = Array.isArray(conversation.messages) ? conversation.messages : [];
     if (referenceMessage) history.push(referenceMessage);
+    attachmentReferenceMessages.forEach((m) => history.push(m));
     const userMessage = {
       role: 'user',
       content: message.trim(),
-      attachments: Array.isArray(attachments) ? attachments : [],
+      // The extracted text itself already lives in the reference
+      // messages above — store only the label here so the same content
+      // isn't duplicated twice in the conversation.
+      attachments: Array.isArray(attachments)
+        ? attachments.map((a) => ({ type: a.type, name: a.name, hasContent: !!(a.text && a.text.trim()) }))
+        : [],
       createdAt: new Date().toISOString(),
     };
     history.push(userMessage);
@@ -349,6 +434,12 @@ router.post('/', async (req, res) => {
       data: {
         conversationId: updated.rows[0].id,
         contentType: updated.rows[0].content_type,
+        // Total entries in the stored thread, INCLUDING the synthetic
+        // reference messages above — this is what actually determines
+        // the `history.slice(-20)` window the AI sees, so the frontend
+        // uses this (not its own display-message count) to decide when
+        // to show the "older messages are outside AI context" notice.
+        messageCount: history.length,
         message: {
           role: 'assistant',
           text,
