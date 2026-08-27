@@ -37,7 +37,12 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-secret'],
 }));
 
-app.use(express.json());
+// Default express.json() body limit is 100kb — fine for ordinary JSON,
+// but the "Ask Sabino AI" chat sends attached images as base64 inside
+// the JSON body (see routes/teacher-ai/chat.js), and up to 3 of those
+// can ride on a single message. 35mb covers that (base64 inflates the
+// 8MB-per-image cap there by ~33%) with headroom to spare.
+app.use(express.json({ limit: '35mb' }));
 // 2. Replace manual logging with Morgan
 // 'dev' gives you color-coded status logs and response times
 app.use(morgan('dev'));

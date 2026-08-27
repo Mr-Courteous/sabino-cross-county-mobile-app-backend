@@ -134,7 +134,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
         pref.stamp_url, 
         pref.theme_color, 
         pref.header_text,
-        c.display_name as class_name,
+        c.class_name as class_name,
         COALESCE(sub.subject_name, 'Unknown Subject') as subject_name,
         COALESCE(sc.ca1_score, 0) as ca1_score,
         COALESCE(sc.ca2_score, 0) as ca2_score,
@@ -558,6 +558,7 @@ router.get('/search/students', authMiddleware.requireSchool, checkSubscription, 
         s.id as student_id,
         s.first_name, 
         s.last_name, 
+        s.email as email,
         g.class_name as class_name,
         e.session_id,
         ay.year_label as session_name
@@ -596,35 +597,44 @@ router.get('/search/students', authMiddleware.requireSchool, checkSubscription, 
           ORDER BY s.term ASC, sub.subject_name ASC
         `;
 
-        const scoresResult = await pool.query(scoresQuery, [
-          student.enrollment_id,
-          student.session_id,
-          schoolId
-        ]);
+        try {
+          const scoresResult = await pool.query(scoresQuery, [
+            student.enrollment_id,
+            student.session_id,
+            schoolId
+          ]);
 
-        // Group scores by term
-        const scoresByTerm = {};
-        scoresResult.rows.forEach(score => {
-          if (!scoresByTerm[score.term]) {
-            scoresByTerm[score.term] = [];
-          }
-          scoresByTerm[score.term].push({
-            subject_id: score.subject_id,
-            subject_name: score.subject_name,
-            ca1_score: score.ca1_score,
-            ca2_score: score.ca2_score,
-            ca3_score: score.ca3_score,
-            ca4_score: score.ca4_score,
-            exam_score: score.exam_score,
-            total_score: score.total_score,
-            teacher_remark: score.teacher_remark
+          // Group scores by term
+          const scoresByTerm = {};
+          scoresResult.rows.forEach(score => {
+            if (!scoresByTerm[score.term]) {
+              scoresByTerm[score.term] = [];
+            }
+            scoresByTerm[score.term].push({
+              subject_id: score.subject_id,
+              subject_name: score.subject_name,
+              ca1_score: score.ca1_score,
+              ca2_score: score.ca2_score,
+              ca3_score: score.ca3_score,
+              ca4_score: score.ca4_score,
+              exam_score: score.exam_score,
+              total_score: score.total_score,
+              teacher_remark: score.teacher_remark
+            });
           });
-        });
 
-        return {
-          ...student,
-          scores_by_term: scoresByTerm
-        };
+          return {
+            ...student,
+            scores_by_term: scoresByTerm
+          };
+        } catch (innerErr) {
+          console.error(`Scores fetch failed for enrollment ${student.enrollment_id}:`, innerErr);
+          // Return student with empty scores to avoid failing entire request
+          return {
+            ...student,
+            scores_by_term: {}
+          };
+        }
       })
     );
 
@@ -636,7 +646,7 @@ router.get('/search/students', authMiddleware.requireSchool, checkSubscription, 
       count: studentsWithScores.length
     });
   } catch (error) {
-    console.error('❌ Student Search Error:', error.message);
+    console.error('❌ Student Search Error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
