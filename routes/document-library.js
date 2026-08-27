@@ -328,15 +328,21 @@ router.post(
       }
 
       const identity = getUploaderIdentity(req);
-      const nextVisibility = decision === 'approved' ? 'school' : 'submission';
 
+      // NOTE: keep the original visibility unchanged on review so the
+      // submission remains in the database for future reference/history.
+      // We only record the review outcome (review_status/review_note)
+      // and who reviewed it. This preserves the uploaded file and its
+      // provenance in the submission queue while still marking it
+      // 'approved' or 'changes_requested'. If you want a separate
+      // promotion-to-school step, we can add an explicit "promote" API.
       const result = await pool.query(
         `UPDATE document_library
-         SET visibility = $1, review_status = $2, review_note = $3,
-             reviewed_by_type = $4, reviewed_by_id = $5, reviewed_by_name = $6, reviewed_at = CURRENT_TIMESTAMP
-         WHERE id = $7
+         SET review_status = $1, review_note = $2,
+             reviewed_by_type = $3, reviewed_by_id = $4, reviewed_by_name = $5, reviewed_at = CURRENT_TIMESTAMP
+         WHERE id = $6
          RETURNING *`,
-        [nextVisibility, decision, note ? String(note).trim() : null, identity.type, identity.id, identity.name, req.params.id]
+        [decision, note ? String(note).trim() : null, identity.type, identity.id, identity.name, req.params.id]
       );
 
       res.json({ success: true, data: rowToCamel(result.rows[0]) });
