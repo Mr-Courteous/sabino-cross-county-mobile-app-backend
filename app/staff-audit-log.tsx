@@ -51,6 +51,7 @@ const ACTION_META: Record<string, { icon: keyof typeof Ionicons.glyphMap; label:
   'student.deleted': { icon: 'trash-outline', label: 'removed a student', color: '#EF4444' },
   'score.created': { icon: 'add-circle-outline', label: 'added a score', color: '#22C55E' },
   'score.updated': { icon: 'create-outline', label: 'edited a score', color: '#3B82F6' },
+  'document_library.reviewed': { icon: 'checkmark-done-outline', label: 'reviewed a document', color: '#22C55E' },
 };
 
 export default function StaffAuditLogPage() {
@@ -211,6 +212,9 @@ export default function StaffAuditLogPage() {
                       <ThemedText style={styles.entryActor}>{actorName(entry)}</ThemedText>
                       {' '}{meta.label}
                       {target ? <ThemedText style={styles.entryTarget}> — {target}</ThemedText> : null}
+                      {entry.action === 'document_library.reviewed' && entry.details?.decision ? (
+                        <ThemedText style={styles.entryTarget}> — {entry.details.decision === 'approved' ? 'Approved' : 'Changes requested'}</ThemedText>
+                      ) : null}
                     </ThemedText>
                     <ThemedText style={styles.entryTime}>{formatTimestamp(entry.created_at)}</ThemedText>
                   </View>

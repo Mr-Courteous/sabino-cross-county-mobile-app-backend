@@ -300,7 +300,15 @@ router.post(
 //    teacher can see; they delete + re-upload to try again. ──
 router.post(
   '/:id/review',
-  auditRoute('document_library.reviewed', (req, body) => ({ id: req.params.id, decision: body?.data?.reviewStatus })),
+  auditRoute('document_library.reviewed', (req, body) => ({
+    type: 'document_library',
+    id: req.params.id,
+    details: {
+      decision: body?.data?.reviewStatus,
+      title: body?.data?.title,
+      visibility: body?.data?.visibility,
+    },
+  })),
   async (req, res) => {
     try {
       if (!isOwnerOrFullAdmin(req)) {
