@@ -51,7 +51,9 @@ const ACTION_META: Record<string, { icon: keyof typeof Ionicons.glyphMap; label:
   'student.deleted': { icon: 'trash-outline', label: 'removed a student', color: '#EF4444' },
   'score.created': { icon: 'add-circle-outline', label: 'added a score', color: '#22C55E' },
   'score.updated': { icon: 'create-outline', label: 'edited a score', color: '#3B82F6' },
+  'document_library.uploaded': { icon: 'cloud-upload-outline', label: 'uploaded a document', color: '#22C55E' },
   'document_library.reviewed': { icon: 'checkmark-done-outline', label: 'reviewed a document', color: '#22C55E' },
+  'document_library.deleted': { icon: 'trash-outline', label: 'deleted a document', color: '#EF4444' },
 };
 
 export default function StaffAuditLogPage() {
@@ -159,8 +161,10 @@ export default function StaffAuditLogPage() {
 
   const targetName = (entry: AuditEntry) => {
     if (entry.target_staff_id && staffMap[entry.target_staff_id]) return staffMap[entry.target_staff_id].full_name;
-    // Non-staff targets (students, scores, etc.) won't resolve via staffMap —
+    // Non-staff targets (students, scores, documents, etc.) won't resolve via staffMap —
     // fall back to whatever descriptive name the backend put in `details`.
+    if (entry.details?.title) return entry.details.title;
+    if (entry.details?.documentName) return entry.details.documentName;
     if (entry.details?.studentName) return entry.details.studentName;
     if (entry.details?.name) return entry.details.name;
     if (entry.details?.email) return entry.details.email;

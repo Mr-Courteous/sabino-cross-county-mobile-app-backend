@@ -216,7 +216,15 @@ router.get('/', async (req, res) => {
 router.post(
   '/',
   upload.single('file'),
-  auditRoute('document_library.uploaded', (req, body) => ({ type: body?.data?.docType, id: body?.data?.id })),
+  auditRoute('document_library.uploaded', (req, body) => ({
+    type: body?.data?.docType || 'document_library',
+    id: body?.data?.id,
+    details: {
+      title: body?.data?.title,
+      docType: body?.data?.docType,
+      visibility: body?.data?.visibility,
+    },
+  })),
   async (req, res) => {
     try {
       const { docType, visibility, title, subjectId, classId, term, session } = req.body || {};
