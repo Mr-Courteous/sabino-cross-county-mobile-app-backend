@@ -426,19 +426,23 @@ router.post('/', async (req, res) => {
     const systemPrompt = buildSystemPrompt(effectiveContentType);
 
     // Last 20 turns of history is enough context for this use case and
-    // keeps the request small/fast on Groq. A message's `content` is
-    // normally a plain string, but an image-attachment reference message
-    // (above) stores a multimodal array instead — only the most recent
-    // one of those is kept intact; any earlier ones are collapsed down to
-    // their text part so the request stays within Groq's per-request
-    // image cap and doesn't balloon with old base64 data every turn.
+    // keeps the request small/fast on Groq.
     const recentHistory = history.slice(-20);
+
+    // Ensure the AI never forgets file attachments or library references
+    // by guaranteeing the most recent 5 reference messages are included.
+    const recentReferences = history.filter(m => m.isReference).slice(-5);
+    const missingReferences = recentReferences.filter(
+      ref => !recentHistory.some(m => m.createdAt === ref.createdAt && m.isReference)
+    );
+    const effectiveHistory = [...missingReferences, ...recentHistory];
+
     let lastImageIdx = -1;
-    recentHistory.forEach((m, i) => {
+    effectiveHistory.forEach((m, i) => {
       if (Array.isArray(m.content) && m.content.some((c) => c && c.type === 'image_url')) lastImageIdx = i;
     });
     const hasImage = lastImageIdx !== -1;
-    const conversationMessages = recentHistory.map((m, i) => {
+    const conversationMessages = effectiveHistory.map((m, i) => {
       let content = m.content;
       if (Array.isArray(content) && i !== lastImageIdx) {
         const textOnly = content.filter((c) => c && c.type === 'text').map((c) => c.text).join('\n').trim();

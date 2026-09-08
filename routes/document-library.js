@@ -272,6 +272,7 @@ router.post(
         blob = await put(uniqueFileName, req.file.buffer, {
           access: 'public',
           token: process.env.BLOB_READ_WRITE_TOKEN,
+          contentDisposition: `attachment; filename="${req.file.originalname.replace(/"/g, '')}"`,
         });
       } catch (blobErr) {
         console.error('❌ [document-library] Blob upload failed:', blobErr.message);

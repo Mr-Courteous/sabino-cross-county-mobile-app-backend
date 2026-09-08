@@ -71,9 +71,9 @@ async function sendMarketingNotifications() {
   try {
     // Schools with no subscription OR expired subscription
     const result = await pool.query(`
-      SELECT pt.expo_token
-      FROM push_tokens pt
-      LEFT JOIN school_subscriptions ss ON ss.school_id = pt.school_id
+      SELECT dt.expo_token
+      FROM device_tokens dt
+      LEFT JOIN school_subscriptions ss ON ss.school_id = dt.school_id
       WHERE ss.school_id IS NULL
          OR ss.status != 'active'
          OR ss.end_date < NOW()
@@ -103,9 +103,9 @@ async function sendRetentionNotifications() {
   console.log('💚 Running retention notifications...');
   try {
     const result = await pool.query(`
-      SELECT pt.expo_token, ss.end_date
-      FROM push_tokens pt
-      INNER JOIN school_subscriptions ss ON ss.school_id = pt.school_id
+      SELECT dt.expo_token, ss.end_date
+      FROM device_tokens dt
+      INNER JOIN school_subscriptions ss ON ss.school_id = dt.school_id
       WHERE ss.status = 'active' AND ss.end_date >= NOW()
     `);
 
@@ -134,10 +134,10 @@ async function sendVersionUpdateNotifications() {
   try {
     // Only notify schools that haven't updated AND haven't been notified in the last 7 days
     const result = await pool.query(`
-      SELECT pt.expo_token
-      FROM push_tokens pt
-      WHERE (pt.app_version IS NULL OR pt.app_version != $1)
-        AND (pt.version_notified_at IS NULL OR pt.version_notified_at < NOW() - INTERVAL '7 days')
+      SELECT dt.expo_token
+      FROM device_tokens dt
+      WHERE (dt.app_version IS NULL OR dt.app_version != $1)
+        AND (dt.version_notified_at IS NULL OR dt.version_notified_at < NOW() - INTERVAL '7 days')
     `, [CURRENT_APP_VERSION]);
 
     if (result.rows.length === 0) return console.log('ℹ️ All schools are on the latest version');
@@ -154,7 +154,7 @@ async function sendVersionUpdateNotifications() {
 
     // Mark them as notified so they don't get spammed
     await pool.query(`
-      UPDATE push_tokens SET version_notified_at = NOW()
+      UPDATE device_tokens SET version_notified_at = NOW()
       WHERE (app_version IS NULL OR app_version != $1)
     `, [CURRENT_APP_VERSION]);
 
