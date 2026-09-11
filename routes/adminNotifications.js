@@ -179,14 +179,22 @@ router.post('/send-one', adminAuth, async (req, res) => {
             return res.status(404).json({ success: false, error: 'No push token found for this school' });
         }
 
-        await axios.post(EXPO_PUSH_URL, {
-            to: result.rows[0].expo_token,
+        const messages = result.rows.map(row => ({
+            to: row.expo_token,
             sound: 'default',
             title,
             body,
-        });
+        }));
 
-        res.json({ success: true, message: `Notification sent to school ${school_id}` });
+        const { sent, failed } = await sendPushBatch(messages);
+
+        res.json({ 
+            success: true, 
+            message: `Notification sent to school ${school_id}`,
+            sent,
+            failed,
+            total: result.rows.length
+        });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
