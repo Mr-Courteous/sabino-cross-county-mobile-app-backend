@@ -19,7 +19,7 @@ pool.query(`
 router.post('/register-token', async (req, res) => {
   const { token, appVersion } = req.body;
 
-  if (!token || !token.startsWith('ExponentPushToken[')) {
+  if (!token || (!token.startsWith('ExponentPushToken[') && !token.startsWith('ExpoPushToken['))) {
     return res.status(400).json({ success: false, error: 'Invalid push token' });
   }
 
@@ -33,8 +33,10 @@ router.post('/register-token', async (req, res) => {
       [token, appVersion || null]
     );
 
+    console.log(`[Push Token Registered] ${token} (App v${appVersion || 'unknown'})`);
     res.json({ success: true });
   } catch (err) {
+    console.error('❌ Failed to register push token:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
