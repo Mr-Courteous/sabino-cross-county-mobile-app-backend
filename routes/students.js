@@ -2400,7 +2400,7 @@ router.post('/push-token', authMiddleware.authenticateToken, async (req, res) =>
   const { token, appVersion } = req.body;
   const studentId = req.user.studentId || req.user.id;
 
-  if (!token || !token.startsWith('ExponentPushToken[')) {
+  if (!token || (!token.startsWith('ExponentPushToken[') && !token.startsWith('ExpoPushToken['))) {
     return res.status(400).json({ success: false, error: 'Invalid push token' });
   }
 

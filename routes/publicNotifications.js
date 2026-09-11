@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../database/db');
+const axios = require('axios');
+
+const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 
 // Ensure the table exists when the module loads
 pool.query(`
@@ -34,6 +37,26 @@ router.post('/register-token', async (req, res) => {
     );
 
     console.log(`[Push Token Registered] ${token} (App v${appVersion || 'unknown'})`);
+
+    // Send an immediate welcome/confirmation notification to verify the token is valid & active
+    try {
+      await axios.post(EXPO_PUSH_URL, [{
+        to: token,
+        sound: 'default',
+        title: '🔔 Notifications Enabled',
+        body: 'You are all set! You will now receive important updates from Sabino Edu.',
+        data: { type: 'welcome' }
+      }], {
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }
+      });
+      console.log(`[Push Welcome Notification Sent] ${token}`);
+    } catch (pushErr) {
+      console.error('⚠️ Could not send welcome notification:', pushErr.message);
+    }
+
     res.json({ success: true });
   } catch (err) {
     console.error('❌ Failed to register push token:', err);
