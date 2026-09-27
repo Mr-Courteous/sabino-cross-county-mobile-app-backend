@@ -92,14 +92,20 @@ function buildDocumentsRouter(typeKey) {
       const conditions = ['school_id = $1', 'teacher_type = $2', 'teacher_id = $3'];
       const params = [req.user.schoolId, identity.type, identity.id];
 
-      if (subjectId) { params.push(subjectId); conditions.push(`subject_id = $${params.length}`); }
-      if (classId) { params.push(classId); conditions.push(`class_id = $${params.length}`); }
-      if (term) { params.push(term); conditions.push(`term = $${params.length}`); }
-      if (session) { params.push(session); conditions.push(`session = $${params.length}`); }
-      if (status) { params.push(status); conditions.push(`status = $${params.length}`); }
+      const filterConditions = [];
+      if (subjectId) { params.push(subjectId); filterConditions.push(`subject_id = $${params.length}`); }
+      if (classId) { params.push(classId); filterConditions.push(`class_id = $${params.length}`); }
+      if (term) { params.push(term); filterConditions.push(`term = $${params.length}`); }
+      if (session) { params.push(session); filterConditions.push(`session = $${params.length}`); }
+      if (status) { params.push(status); filterConditions.push(`status = $${params.length}`); }
+
+      let whereClause = conditions.join(' AND ');
+      if (filterConditions.length > 0) {
+        whereClause += ` AND ((${filterConditions.join(' AND ')}) OR (created_via = 'ai' AND status = 'draft' AND class_id IS NULL AND subject_id IS NULL))`;
+      }
 
       const result = await pool.query(
-        `SELECT * FROM ${config.table} WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC`,
+        `SELECT * FROM ${config.table} WHERE ${whereClause} ORDER BY updated_at DESC`,
         params
       );
 
