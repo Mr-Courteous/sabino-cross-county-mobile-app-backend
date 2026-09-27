@@ -1208,10 +1208,16 @@ router.post('/bulk', authMiddleware.authenticateToken, authMiddleware.requireSch
       const defaultPassword = '1234567890';
       const passwordHash = await bcrypt.hash(defaultPassword, 10);
 
+      // Normalize email exactly as the login endpoint does (trim + lowercase) so the
+      // stored value always matches what a student types at login. Without this, a
+      // teacher typing "John@School.com" would cause all login attempts with
+      // "john@school.com" to return "Invalid email or password".
+      const normalizedStudentEmail = s.email ? s.email.trim().toLowerCase() : null;
+
       const studentInsert = await client.query(
         `INSERT INTO students (school_id, first_name, last_name, email, phone, date_of_birth, registration_number, gender, password_hash) 
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-        [schoolId, s.firstName, s.lastName, s.email || null, s.phone || null, s.dateOfBirth || null, studentNum, s.gender || null, passwordHash]
+        [schoolId, s.firstName, s.lastName, normalizedStudentEmail, s.phone || null, s.dateOfBirth || null, studentNum, s.gender || null, passwordHash]
       );
 
       const studentId = studentInsert.rows[0].id;
