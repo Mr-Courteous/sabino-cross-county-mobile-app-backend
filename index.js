@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const morgan = require('morgan'); // 1. Import Morgan
@@ -31,13 +31,30 @@ const app = express();
 app.set('trust proxy', 1); // Trust first hop (e.g., Vercel, Cloudflare, Nginx)
 
 // Middleware - CORS first
+// In production, list every deployed origin explicitly.
+// Set SUPERADMIN_CONSOLE_URL (and optionally CLIENT_URL) on your hosting
+// dashboard so the browser never sees a CORS rejection.
+const ALLOWED_ORIGINS = (() => {
+  const origins = new Set(['http://localhost:5173', 'http://localhost:3000', 'http://localhost:19006']);
+  if (process.env.SUPERADMIN_CONSOLE_URL) origins.add(process.env.SUPERADMIN_CONSOLE_URL.replace(/\/$/, ''));
+  if (process.env.CLIENT_URL)             origins.add(process.env.CLIENT_URL.replace(/\/$/, ''));
+  if (process.env.APP_BASE_URL)           origins.add(process.env.APP_BASE_URL.replace(/\/$/, ''));
+  return origins;
+})();
+
 app.use(cors({
-  origin: '*',
+  origin: (origin, cb) => {
+    // Allow server-to-server calls (no Origin header) and any listed origin.
+    if (!origin || ALLOWED_ORIGINS.has(origin)) return cb(null, true);
+    // In non-production envs keep it open so local testing is never blocked.
+    if (process.env.NODE_ENV !== 'production') return cb(null, true);
+    cb(new Error(`CORS: ${origin} is not in the allow-list`));
+  },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-secret'],
 }));
 
-// Default express.json() body limit is 100kb — fine for ordinary JSON,
+// Default express.json() body limit is 100kb â€” fine for ordinary JSON,
 // but the "Ask Sabino AI" chat sends attached images as base64 inside
 // the JSON body (see routes/teacher-ai/chat.js), and up to 3 of those
 // can ride on a single message. 35mb covers that (base64 inflates the
@@ -50,7 +67,7 @@ app.use(morgan('dev'));
 // Custom logger for all incoming requests
 app.use((req, res, next) => {
   // Only log method and URL for security
-  console.log(`📡 [${new Date().toISOString()}] ${req.method} ${req.url}`);
+  console.log(`ðŸ“¡ [${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
@@ -66,7 +83,7 @@ app.get('/health', async (req, res) => {
       dbTime: dbCheck.rows[0].now
     });
   } catch (error) {
-    console.error('❌ Health check failed:', error.message);
+    console.error('âŒ Health check failed:', error.message);
     res.status(500).json({
       status: 'error',
       database: 'disconnected',
@@ -78,7 +95,7 @@ app.get('/health', async (req, res) => {
 
 // Debug endpoint - Test API connectivity without auth
 app.post('/api/test-message', (req, res) => {
-  console.log('✅ [TEST] API connection verified');
+  console.log('âœ… [TEST] API connection verified');
   res.json({
     success: true,
     message: 'API connection is working properly!',
@@ -107,7 +124,7 @@ app.use('/api/admin', adminRouter);
 app.use('/api/staff-auth', staffAuthRouter);
 app.use('/api/staff', staffManagementRouter);
 
-// Teacher AI (Teaching Assistant) module — Scheme of Work, Lesson Plan,
+// Teacher AI (Teaching Assistant) module â€” Scheme of Work, Lesson Plan,
 // Lesson Note, and the AI chat that drives them. See routes/teacher-ai/.
 app.use('/api/teacher-ai', teacherAiRouter);
 
@@ -115,6 +132,7 @@ app.use('/api/teacher-ai', teacherAiRouter);
 // terminal summary, sign-off trail). See routes/attendance/.
 app.use('/api/attendance', attendanceRouter);
 app.use('/api/document-library', documentLibraryRoutes);
+app.use('/api/superadmin', require('./routes/superadmin'));
 
 // Public data endpoints (subjects, academic sessions, enrollments)
 // These are mounted at /api level for broader access
@@ -181,7 +199,7 @@ app.get('/api/academic-sessions', authenticateToken, checkSubscription, async (r
   try {
     const pool = require('./database/db');
 
-    console.log(`📥 GET /academic-sessions - Fetching all session IDs for User: ${req.user?.id}`);
+    console.log(`ðŸ“¥ GET /academic-sessions - Fetching all session IDs for User: ${req.user?.id}`);
 
     // Added 'id' to the selection
     // Removed 'DISTINCT' so each session ID is unique and available for the frontend
@@ -264,29 +282,29 @@ app.get('/api/enrollments', authenticateToken, checkSubscription, async (req, re
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('❌ Error:', err.message);
+  console.error('âŒ Error:', err.message);
   res.status(500).json({ error: 'Internal server error' });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`✓ sabino-server listening on port ${PORT}`);
+  console.log(`âœ“ sabino-server listening on port ${PORT}`);
   console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // CRON JOBS
-// ─────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // 1. Daily Tasks (12:00 AM UTC)
 cron.schedule('0 0 * * *', async () => {
-  console.log('⏰ [Cron] Running scheduled daily tasks (12:00 AM UTC)...');
+  console.log('â° [Cron] Running scheduled daily tasks (12:00 AM UTC)...');
 
   // A. Database Backup
   try {
     await runBackup();
   } catch (backupErr) {
-    console.error('❌ [Cron] Daily backup failed:', backupErr.message);
+    console.error('âŒ [Cron] Daily backup failed:', backupErr.message);
   }
 
   // B. Proactive Expiry Check
@@ -300,12 +318,12 @@ cron.schedule('0 0 * * *', async () => {
       RETURNING id, name, email
     `);
     if (result.rowCount > 0) {
-      console.log(`✅ [Cron] Proactive Expiry: Marked ${result.rowCount} school(s) as expired`);
+      console.log(`âœ… [Cron] Proactive Expiry: Marked ${result.rowCount} school(s) as expired`);
     } else {
-      console.log('ℹ️ [Cron] Proactive Expiry: No newly expired schools found');
+      console.log('â„¹ï¸ [Cron] Proactive Expiry: No newly expired schools found');
     }
   } catch (expiryErr) {
-    console.error('❌ [Cron] Proactive Expiry check failed:', expiryErr.message);
+    console.error('âŒ [Cron] Proactive Expiry check failed:', expiryErr.message);
   }
 }, {
   scheduled: true,
@@ -314,11 +332,11 @@ cron.schedule('0 0 * * *', async () => {
 
 // 2. Test Job (Every 1 Minute) - COMMENT THIS OUT IN PRODUCTION
 // cron.schedule('* * * * *', async () => {
-//   console.log('⏰ [Cron] Running 1-minute test backup...');
+//   console.log('â° [Cron] Running 1-minute test backup...');
 //   try {
 //     await runBackup();
 //   } catch (err) {
-//     console.error('❌ [Cron] 1-minute test backup failed:', err.message);
+//     console.error('âŒ [Cron] 1-minute test backup failed:', err.message);
 //   }
 // });
 
