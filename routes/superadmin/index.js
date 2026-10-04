@@ -19,6 +19,7 @@ const router = express.Router();
 
 const PAYMENT_STATUSES = ['pending', 'completed', 'grace_period', 'expired'];
 const MIN_PASSWORD = 10;
+const GRACE_DAYS = 3; // a grace period always runs exactly this long from the moment it is set
 const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 10); // equalises timing for unknown emails
 
 const wrap = (fn) => (req, res) =>
@@ -201,8 +202,11 @@ router.patch('/schools/:id/payment-status', requireRole('owner', 'admin'), wrap(
   if (note.length < 3) return fail(res, 400, 'Add a reason so the audit log explains this change.');
 
   // Paid statuses need a future expiry — middleware/checkSubscription.js rejects a paid school with none.
+  // Grace period is fixed at GRACE_DAYS from now and ignores any date sent by the client.
   let newExpiry = null;
-  if (status === 'completed' || status === 'grace_period') {
+  if (status === 'grace_period') {
+    newExpiry = new Date(Date.now() + GRACE_DAYS * 86400000);
+  } else if (status === 'completed') {
     newExpiry = expiryDate ? new Date(expiryDate) : new Date(Date.now() + 30 * 86400000);
     if (Number.isNaN(newExpiry.getTime()) || newExpiry <= new Date()) {
       return fail(res, 400, 'Choose an expiry date in the future.');
