@@ -47,6 +47,22 @@ function ensureSuperadminTables() {
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_sa_audit_target ON superadmin_audit_logs(target_type, target_id)`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_sa_audit_admin ON superadmin_audit_logs(admin_email)`);
 
+      // The superadmin console and subscription middleware support a fixed
+      // three-day grace period. Older deployments may still have a check
+      // constraint that only allows pending/completed/expired.
+      const paymentStatusConstraint = (await pool.query(`
+        SELECT pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint
+        WHERE conrelid = 'schools'::regclass AND conname = 'valid_payment_status'
+      `)).rows[0];
+      if (!paymentStatusConstraint?.definition?.includes("'grace_period'")) {
+        await pool.query(`ALTER TABLE schools DROP CONSTRAINT IF EXISTS valid_payment_status`);
+        await pool.query(`
+          ALTER TABLE schools ADD CONSTRAINT valid_payment_status
+          CHECK (payment_status IN ('pending', 'completed', 'grace_period', 'expired'))
+        `);
+      }
+
       // ── School status history ────────────────────────────────────────────
       // Your schools table has no "payment completed at" column, and several code
       // paths (Flutterwave, store webhook, cron, this console) change payment_status.

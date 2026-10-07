@@ -204,8 +204,11 @@ router.patch('/schools/:id/payment-status', requireRole('owner', 'admin'), wrap(
   // Paid statuses need a future expiry — middleware/checkSubscription.js rejects a paid school with none.
   // Grace period is fixed at GRACE_DAYS from now and ignores any date sent by the client.
   let newExpiry = null;
+  let dbStatus = status;
+
   if (status === 'grace_period') {
     newExpiry = new Date(Date.now() + GRACE_DAYS * 86400000);
+    dbStatus = 'completed';
   } else if (status === 'completed') {
     newExpiry = expiryDate ? new Date(expiryDate) : new Date(Date.now() + 30 * 86400000);
     if (Number.isNaN(newExpiry.getTime()) || newExpiry <= new Date()) {
@@ -223,7 +226,7 @@ router.patch('/schools/:id/payment-status', requireRole('owner', 'admin'), wrap(
 
     // Expiry behaviour is decided in JS and passed as its own typed parameter
     // (Postgres can't infer one type for a $1 used as both a value and a CASE operand).
-    const expiryMode = newExpiry ? 'set' : status === 'pending' ? 'clear' : 'keep';
+    const expiryMode = newExpiry ? 'set' : dbStatus === 'pending' ? 'clear' : 'keep';
     const after = (await client.query(
       `UPDATE schools SET payment_status = $1::varchar,
          subscription_expiry = CASE $2::text WHEN 'set' THEN $3::timestamptz
@@ -231,7 +234,7 @@ router.patch('/schools/:id/payment-status', requireRole('owner', 'admin'), wrap(
                                              ELSE subscription_expiry END,
          updated_at = CURRENT_TIMESTAMP
        WHERE id = $4 RETURNING ${SCHOOL_COLS}`,
-      [status, expiryMode, newExpiry, id]
+      [dbStatus, expiryMode, newExpiry, id]
     )).rows[0];
 
     await writeAudit(client, req, actorOf(req.admin), {
@@ -243,7 +246,7 @@ router.patch('/schools/:id/payment-status', requireRole('owner', 'admin'), wrap(
       },
     });
     await client.query('COMMIT');
-    res.json({ success: true, message: `${before.name} is now ${status.replace('_', ' ')}.`, data: after });
+    res.json({ success: true, message: `${before.name} is now ${dbStatus.replace('_', ' ')}.`, data: after });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
