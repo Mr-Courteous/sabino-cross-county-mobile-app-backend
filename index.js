@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const morgan = require('morgan'); // 1. Import Morgan
@@ -35,7 +35,12 @@ app.set('trust proxy', 1); // Trust first hop (e.g., Vercel, Cloudflare, Nginx)
 // Set SUPERADMIN_CONSOLE_URL (and optionally CLIENT_URL) on your hosting
 // dashboard so the browser never sees a CORS rejection.
 const ALLOWED_ORIGINS = (() => {
-  const origins = new Set(['http://localhost:5173', 'http://localhost:3000', 'http://localhost:19006']);
+  const origins = new Set([
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://localhost:19006',
+    'https://sabino-edu-super-admin.vercel.app'
+  ]);
   if (process.env.SUPERADMIN_CONSOLE_URL) origins.add(process.env.SUPERADMIN_CONSOLE_URL.replace(/\/$/, ''));
   if (process.env.CLIENT_URL)             origins.add(process.env.CLIENT_URL.replace(/\/$/, ''));
   if (process.env.APP_BASE_URL)           origins.add(process.env.APP_BASE_URL.replace(/\/$/, ''));
