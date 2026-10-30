@@ -23,6 +23,25 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// True while a school is still on its free trial and has NOT paid yet
+// (subscription_expiry is still the trial end date). A trial looks like an
+// active subscription (status 'completed', future expiry), so the
+// "already active" shortcuts below must not apply to it - otherwise a school
+// that pays during its trial would never be upgraded.
+async function isUnpaidTrial(schoolId) {
+  try {
+    const r = await pool.query(
+      `SELECT 1 FROM schools
+        WHERE id = $1 AND is_trial = true
+          AND subscription_expiry IS NOT DISTINCT FROM trial_ends_at`,
+      [schoolId]
+    );
+    return r.rows.length > 0;
+  } catch (e) {
+    return false; // trial columns not migrated yet
+  }
+}
+
 async function activateSubscription(schoolId, txRef) {
   const expiry = new Date();
   expiry.setMonth(expiry.getMonth() + PLAN_MONTHS);
@@ -115,7 +134,7 @@ router.post('/verify', authMiddleware.authenticateToken, async (req, res) => {
     );
     const school = schoolResult.rows[0];
     if (school?.payment_status === 'completed' && school?.subscription_expiry) {
-      if (new Date(school.subscription_expiry) > new Date()) {
+      if (new Date(school.subscription_expiry) > new Date() && !(await isUnpaidTrial(schoolId))) {
         return res.status(200).json({ success: true, message: 'Subscription already active' });
       }
     }
@@ -213,7 +232,8 @@ router.get('/flw-callback', async (req, res) => {
           const s = existing.rows[0];
           const alreadyActive = s?.payment_status === 'completed' &&
             s?.subscription_expiry &&
-            new Date(s.subscription_expiry) > new Date();
+            new Date(s.subscription_expiry) > new Date() &&
+            !(await isUnpaidTrial(schoolId));
 
           if (!alreadyActive) {
             await activateSubscription(schoolId, tx_ref);
@@ -290,7 +310,7 @@ router.post('/flw-webhook', express.raw({ type: 'application/json' }), async (re
     );
     const school = schoolResult.rows[0];
     if (school?.payment_status === 'completed' && school?.subscription_expiry) {
-      if (new Date(school.subscription_expiry) > new Date()) {
+      if (new Date(school.subscription_expiry) > new Date() && !(await isUnpaidTrial(schoolId))) {
         console.log(`[flw-webhook] School ${schoolId} already active. Skipping.`);
         return;
       }

@@ -4,6 +4,7 @@ const pool = require('../database/db');
 const authMiddleware = require('../middleware/auth');
 const checkSubscription = require('../middleware/checkSubscription');
 const { auditRoute } = require('../middleware/auditLog');
+const assessment = require('../utils/assessment');
 
 // Apply authentication middleware to all score routes
 router.use(authMiddleware.authenticateToken);
@@ -104,7 +105,9 @@ router.get('/sheet', authMiddleware.requireSchool, checkSubscription, async (req
         COALESCE(sc.ca2_score, NULL) as ca2_score,
         COALESCE(sc.ca3_score, NULL) as ca3_score,
         COALESCE(sc.ca4_score, NULL) as ca4_score,
-        COALESCE(sc.exam_score, NULL) as exam_score
+        COALESCE(sc.exam_score, NULL) as exam_score,
+        sc.components,
+        sc.template_snapshot
       FROM enrollments e
       JOIN students s ON e.student_id = s.id
       LEFT JOIN scores sc ON 
@@ -116,16 +119,20 @@ router.get('/sheet', authMiddleware.requireSchool, checkSubscription, async (req
       WHERE e.class_id = $4 
         AND e.session_id = $2
         AND e.school_id = $5
+        ${req.query.armId ? 'AND e.arm_id = $6' : ''}
       ORDER BY s.last_name ASC, s.first_name ASC
     `;
 
-    const result = await pool.query(query, [
+    const sheetParams = [
       subjectId,      // $1: subject_id
       sessionId,      // $2: academic_session
       termId,         // $3: term
       classId,        // $4: class_id
       schoolId        // $5: school_id
-    ]);
+    ];
+    if (req.query.armId) sheetParams.push(parseInt(req.query.armId));
+    const result = await pool.query(query, sheetParams);
+    const sheetConfig = await assessment.getSchoolConfig(pool, schoolId);
 
     console.log(`✓ Scoring sheet retrieved: ${result.rowCount} students for class=${classId}, subject=${subjectId}, session=${sessionId}, term=${termId}`);
 
@@ -148,11 +155,27 @@ router.get('/sheet', authMiddleware.requireSchool, checkSubscription, async (req
       });
     }
 
+    // Each row also carries `values` ({ columnKey: value }) so the app can
+    // render whatever columns this school's template defines.
+    const sheetRows = result.rows.map((r) => {
+      const { components, template_snapshot, ...rest } = r;
+      return { ...rest, values: assessment.storedValues({ ...r }) };
+    });
+
     res.json({
       success: true,
       message: `Found ${result.rowCount} students ready for scoring`,
-      data: result.rows,
-      count: result.rowCount
+      data: sheetRows,
+      count: result.rowCount,
+      config: {
+        isCustom: sheetConfig.isCustom,
+        version: sheetConfig.version,
+        total_max: sheetConfig.total_max,
+        // Only the columns a teacher can type into, in the school's order.
+        columns: sheetConfig.components
+          .filter((c) => c.type !== 'computed' && c.visible !== false)
+          .map((c) => ({ key: c.key, label: c.label, type: c.type, max: c.max, counts_toward_total: c.counts_toward_total !== false })),
+      }
     });
   } catch (error) {
     console.error('❌ Scoring sheet fetch error:', error);
@@ -227,20 +250,14 @@ router.post('/record', authMiddleware.requireSchool, checkSubscription,
 
     console.log(`📝 Processing ${scores.length} score records with UPSERT strategy...`);
 
-    // Validate all scores BEFORE starting transaction
+    // Validate all scores BEFORE starting transaction, against THIS
+    // school's template (the built-in CA1-CA4 /10 + Exam /60 unless the
+    // school has customised it).
+    const config = await assessment.getSchoolConfig(pool, schoolId);
+
     for (let i = 0; i < scores.length; i++) {
       const score = scores[i];
-      const {
-        enrollment_id,
-        subject_id,
-        term_id,
-        sessionId,
-        ca1_score,
-        ca2_score,
-        ca3_score,
-        ca4_score,
-        exam_score
-      } = score;
+      const { enrollment_id, subject_id, term_id, sessionId } = score;
 
       // Validate required fields
       if (!enrollment_id || !subject_id || !term_id || !sessionId) {
@@ -260,23 +277,14 @@ router.post('/record', authMiddleware.requireSchool, checkSubscription,
         });
       }
 
-      // Validate score ranges (if provided)
-      const caScores = [ca1_score, ca2_score, ca3_score, ca4_score];
-      for (const ca of caScores) {
-        if (ca !== null && ca !== undefined && (ca < 0 || ca > 10)) {
-          return res.status(400).json({
-            success: false,
-            message: 'Validation Error',
-            error: `Score ${i + 1}: CA scores must be between 0 and 10`
-          });
-        }
-      }
-
-      if (exam_score !== null && exam_score !== undefined && (exam_score < 0 || exam_score > 60)) {
+      // Validate every value against the school's columns and maximums
+      const parsed = assessment.readIncomingValues(score, config);
+      if (parsed.errors.length) {
         return res.status(400).json({
           success: false,
           message: 'Validation Error',
-          error: `Score ${i + 1}: Exam score must be between 0 and 60`
+          error: `Score ${i + 1}: ${parsed.errors[0]}`,
+          errors: parsed.errors
         });
       }
 
@@ -292,17 +300,7 @@ router.post('/record', authMiddleware.requireSchool, checkSubscription,
     // Process each score with security checks inside transaction
     for (let i = 0; i < scores.length; i++) {
       const score = scores[i];
-      const {
-        enrollment_id,
-        subject_id,
-        term_id,
-        sessionId,
-        ca1_score = null,
-        ca2_score = null,
-        ca3_score = null,
-        ca4_score = null,
-        exam_score = null
-      } = score;
+      const { enrollment_id, subject_id, term_id, sessionId } = score;
 
       // SECURITY: Verify enrollment belongs to the authenticated school
       const enrollmentCheck = await client.query(
@@ -320,56 +318,35 @@ router.post('/record', authMiddleware.requireSchool, checkSubscription,
         });
       }
 
-      // SECURITY: Verify subject/template belongs to the country
-      // const subjectCheck = await client.query(
-      //   `SELECT id, display_name, country_id
-      //    FROM global_class_templates 
-      //    WHERE id = $1 AND country_id = $2`,
-      //   [subject_id, countryId]
-      // );
-
-      // if (subjectCheck.rows.length === 0) {
-      //   await client.query('ROLLBACK');
-      //   console.error(`❌ Score ${i + 1}: Subject not found for country`);
-      //   return res.status(403).json({
-      //     success: false,
-      //     message: 'Unauthorized',
-      //     error: `Score ${i + 1}: Subject (ID: ${subject_id}) is not available for your country`
-      //   });
-      // }
-
-      // UPSERT with ON CONFLICT strategy
-      const result = await client.query(
-        `INSERT INTO scores (
-    school_id, enrollment_id, subject_id, session_id, term,
-    ca1_score, ca2_score, ca3_score, ca4_score, exam_score, updated_by
-  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-  ON CONFLICT (school_id, enrollment_id, subject_id, session_id, term)
-  DO UPDATE SET
-    ca1_score = COALESCE(EXCLUDED.ca1_score, scores.ca1_score),
-    ca2_score = COALESCE(EXCLUDED.ca2_score, scores.ca2_score),
-    ca3_score = COALESCE(EXCLUDED.ca3_score, scores.ca3_score),
-    ca4_score = COALESCE(EXCLUDED.ca4_score, scores.ca4_score),
-    exam_score = COALESCE(EXCLUDED.exam_score, scores.exam_score),
-    updated_by = EXCLUDED.updated_by,
-    updated_at = CURRENT_TIMESTAMP
-  RETURNING *`,
-        [
-          schoolId,          // $1
-          enrollment_id,     // $2
-          subject_id,        // $3
-          sessionId,         // $4
-          term_id,           // $5
-          ca1_score,         // $6
-          ca2_score,         // $7
-          ca3_score,         // $8
-          ca4_score,         // $9
-          exam_score,        // $10
-          userId             // $11
-        ]
+      // SECURITY: the subject must be a shared-library subject or one this school owns
+      const subjectCheck = await client.query(
+        'SELECT id FROM global_subjects WHERE id = $1 AND (school_id IS NULL OR school_id = $2)',
+        [subject_id, schoolId]
       );
+      if (subjectCheck.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({
+          success: false,
+          message: 'Unauthorized',
+          error: `Score ${i + 1}: Subject is not available to your school`
+        });
+      }
 
-      if (result.rows.length === 0) {
+      // UPSERT. On the built-in layout this is the original query; on a
+      // custom layout the record is validated against the template and
+      // stamped with a frozen copy of it (see utils/assessment.js).
+      const saved = await assessment.saveScoreRecord(client, {
+        schoolId,
+        userId,
+        enrollmentId: enrollment_id,
+        subjectId: subject_id,
+        sessionId,
+        term: parseInt(term_id),
+        incoming: score,
+        config
+      });
+
+      if (!saved.row) {
         await client.query('ROLLBACK');
         console.error(`❌ Score ${i + 1}: UPSERT failed`);
         return res.status(500).json({
@@ -379,8 +356,8 @@ router.post('/record', authMiddleware.requireSchool, checkSubscription,
         });
       }
 
-      results.push(result.rows[0]);
-      console.log(`✓ Score ${i + 1} upserted: enrollment_id=${enrollment_id}, term=${term_id}, total_score=${result.rows[0].total_score}`);
+      results.push(saved.row);
+      console.log(`✓ Score ${i + 1} saved: enrollment_id=${enrollment_id}, term=${term_id}, total_score=${saved.row.total_score}`);
     }
 
     // Commit the transaction
@@ -823,6 +800,7 @@ router.get('/my-grades', authMiddleware.requireStudent, checkSubscription, async
     const query = `
       SELECT
         s.id as score_id,
+        s.subject_id,
         COALESCE(sub.subject_name, 'Unknown Subject') as subject_name,
         s.ca1_score,
         s.ca2_score,
@@ -831,6 +809,9 @@ router.get('/my-grades', authMiddleware.requireStudent, checkSubscription, async
         s.exam_score,
         s.total_score,
         s.teacher_remark,
+        s.components,
+        s.template_snapshot,
+        s.grading_snapshot,
         e.id as enrollment_id,
         c.class_name as class_name,
         s.total_score as student_total,
@@ -914,12 +895,40 @@ router.get('/my-grades', authMiddleware.requireStudent, checkSubscription, async
 
     console.log(`✓ Scores retrieved: ${result.rowCount} subjects for student=${studentId}, term=${term}, session=${sessionId}`);
 
+    // Schools with a custom template: grade each record on the scale it
+    // was saved under, count passes against that record's own total, and
+    // send a ready-made table layout. Built-in rows are returned as before.
+    let layout = { custom: false, columns: [], rows: [] };
+    if (result.rows.some((r) => r.template_snapshot)) {
+      const classId = (await pool.query('SELECT class_id FROM enrollments WHERE id = $1', [result.rows[0].enrollment_id])).rows[0]?.class_id;
+      const statsMap = await assessment.getClassSubjectStats(pool, schoolId, classId, parseInt(sessionId), parseInt(term));
+      layout = assessment.buildReportLayout(result.rows, statsMap);
+    }
+    if (layout.custom) {
+      if (summary) {
+        let passed = 0;
+        let failed = 0;
+        result.rows.forEach((r) => {
+          const comps = r.template_snapshot?.components || assessment.DEFAULT_COMPONENTS;
+          const pass = 0.5 * assessment.totalMaxOf(comps);
+          if (Number(r.total_score) >= pass) passed++; else failed++;
+        });
+        summary.subjects_passed = passed;
+        summary.subjects_failed = failed;
+      }
+    }
+    const gradedRows = result.rows.map((r) => {
+      const { components, template_snapshot, grading_snapshot, ...rest } = r;
+      return layout.custom ? assessment.applyRowGrade({ ...rest, total_score: r.total_score, grading_snapshot }) : rest;
+    });
+
     res.json({
       success: true,
       message: `Found scores for ${result.rowCount} subject(s)`,
-      data: result.rows,
+      data: gradedRows,
       summary: summary,
-      count: result.rowCount
+      count: result.rowCount,
+      layout: layout.custom ? { columns: layout.columns, rows: layout.rows, total_max: layout.total_max } : null
     });
 
   } catch (error) {
@@ -1574,78 +1583,81 @@ router.delete('/:scoreId', authMiddleware.authenticateToken, authMiddleware.requ
 router.put('/:scoreId',
   auditRoute('score.updated', (req) => ({ type: 'score', id: req.params.scoreId })),
   async (req, res) => {
+  const client = await pool.connect();
   try {
     const schoolId = req.user?.schoolId;
     const { scoreId } = req.params;
-    const {
-      ca1Score,
-      ca2Score,
-      ca3Score,
-      ca4Score,
-      examScore,
-      teacherRemark
-    } = req.body;
+    const { teacherRemark } = req.body;
 
-    // Validate score ranges if provided
-    const scores = { ca1Score, ca2Score, ca3Score, ca4Score };
-    for (const [key, value] of Object.entries(scores)) {
-      if (value !== null && value !== undefined && (value < 0 || value > 20)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Validation Error',
-          error: `${key} must be between 0 and 20`
-        });
-      }
-    }
+    const config = await assessment.getSchoolConfig(pool, schoolId);
 
-    if (examScore !== null && examScore !== undefined && (examScore < 0 || examScore > 40)) {
+    // Same validation as POST /record: this school's columns and maximums.
+    // (Previously this endpoint used different limits - CA 20 / Exam 40 -
+    // from /record's CA 10 / Exam 60.)
+    const parsed = assessment.readIncomingValues(req.body, config);
+    if (parsed.errors.length) {
       return res.status(400).json({
         success: false,
         message: 'Validation Error',
-        error: 'Exam score must be between 0 and 40'
+        error: parsed.errors[0],
+        errors: parsed.errors
       });
     }
 
-    // Update with COALESCE to preserve existing values
-    const result = await pool.query(
-      `UPDATE scores SET
-        ca1_score = COALESCE($1::DECIMAL, ca1_score),
-        ca2_score = COALESCE($2::DECIMAL, ca2_score),
-        ca3_score = COALESCE($3::DECIMAL, ca3_score),
-        ca4_score = COALESCE($4::DECIMAL, ca4_score),
-        exam_score = COALESCE($5::DECIMAL, exam_score),
-        teacher_remark = COALESCE($6, teacher_remark),
-        updated_by = $7,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = $8 AND school_id = $9
-      RETURNING *`,
-      [
-        ca1Score, ca2Score, ca3Score, ca4Score, examScore,
-        teacherRemark, req.user.id, scoreId, schoolId
-      ]
+    await client.query('BEGIN');
+    const found = await client.query(
+      'SELECT enrollment_id, subject_id, session_id, term FROM scores WHERE id = $1 AND school_id = $2',
+      [scoreId, schoolId]
     );
-
-    if (result.rows.length === 0) {
+    if (found.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({
         success: false,
         message: 'Not Found',
         error: 'Score record not found'
       });
     }
+    const key = found.rows[0];
+
+    let saved = await assessment.saveScoreRecord(client, {
+      schoolId,
+      userId: req.user.id,
+      enrollmentId: key.enrollment_id,
+      subjectId: key.subject_id,
+      sessionId: key.session_id,
+      term: key.term,
+      incoming: req.body,
+      config
+    });
+
+    if (teacherRemark !== undefined && teacherRemark !== null) {
+      const r = await client.query(
+        'UPDATE scores SET teacher_remark = $1, updated_by = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3 AND school_id = $4 RETURNING *',
+        [teacherRemark, req.user.id, scoreId, schoolId]
+      );
+      saved = { row: r.rows[0], changed: true };
+    }
+    await client.query('COMMIT');
 
     res.status(200).json({
       success: true,
       message: 'Score record updated successfully',
-      data: result.rows[0]
+      data: saved.row
     });
 
   } catch (error) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* ignore */ }
+    if (error.status === 400) {
+      return res.status(400).json({ success: false, message: 'Validation Error', error: error.message });
+    }
     console.error('Update Score Error:', error);
     res.status(500).json({
       success: false,
       message: 'Server Error',
       error: error.message
     });
+  } finally {
+    client.release();
   }
 });
 

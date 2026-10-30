@@ -135,7 +135,7 @@ router.get('/school', async (req, res) => {
     }
 
     let result = await pool.query(
-      `SELECT id, class_name, capacity FROM classes WHERE school_id = $1 ORDER BY class_name ASC`,
+      `SELECT id, class_name, capacity FROM classes WHERE school_id = $1 AND archived_at IS NULL ORDER BY class_name ASC`,
       [schoolId]
     );
 
@@ -163,8 +163,11 @@ router.get('/school', async (req, res) => {
         await client.query('BEGIN');
         await client.query('SELECT pg_advisory_xact_lock($1)', [schoolId]);
 
+        // Includes archived classes and the original template name of
+        // renamed ones, so a class the school renamed or removed is not
+        // silently re-created from the template.
         const current = await client.query(
-          `SELECT id, class_name FROM classes WHERE school_id = $1`,
+          `SELECT id, class_name, origin_name FROM classes WHERE school_id = $1`,
           [schoolId]
         );
         const templates = await client.query(
@@ -175,7 +178,11 @@ router.get('/school', async (req, res) => {
         // here is what previously let a template re-seed itself every
         // single load whenever the stored name differed by casing or
         // stray whitespace from the template's display_name.
-        const existingNames = new Set(current.rows.map((r) => r.class_name.trim().toLowerCase()));
+        const existingNames = new Set();
+        current.rows.forEach((r) => {
+          existingNames.add(r.class_name.trim().toLowerCase());
+          if (r.origin_name) existingNames.add(r.origin_name.trim().toLowerCase());
+        });
         const missingTemplates = templates.rows.filter(
           (t) => !existingNames.has(t.display_name.trim().toLowerCase())
         );
@@ -193,7 +200,7 @@ router.get('/school', async (req, res) => {
       }
 
       result = await pool.query(
-        `SELECT id, class_name, capacity FROM classes WHERE school_id = $1 ORDER BY class_name ASC`,
+        `SELECT id, class_name, capacity FROM classes WHERE school_id = $1 AND archived_at IS NULL ORDER BY class_name ASC`,
         [schoolId]
       );
     }
@@ -217,11 +224,12 @@ router.get('/subjects', async (req, res) => {
     // Optional: Let the frontend filter by level (e.g., /subjects?level=Primary)
     const { level } = req.query;
 
-    let query = 'SELECT id, subject_name as name, category, education_level FROM global_subjects';
-    let params = [];
+    // Shared library + this school's own subjects (never another school's).
+    let query = 'SELECT id, subject_name as name, category, education_level, (school_id IS NOT NULL) AS is_custom FROM global_subjects WHERE (school_id IS NULL OR school_id = $1)';
+    let params = [schoolId];
 
     if (level) {
-      query += ' WHERE education_level = $1';
+      query += ' AND education_level = $2';
       params.push(level);
     }
 
@@ -418,6 +426,120 @@ router.post('/initialize', async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   } finally {
     client.release();
+  }
+});
+
+/**
+ * Class management (add / rename / archive).
+ *   POST   /api/classes/school        { className, capacity? }
+ *   PUT    /api/classes/school/:id    { className?, capacity? }
+ *   DELETE /api/classes/school/:id    archives; 409 while active students are enrolled
+ * Classes are archived rather than deleted so past report cards survive,
+ * and so the template top-up in GET /school never brings them back.
+ */
+const requireClassEditor = (req, res, next) => {
+  if (req.user?.type !== 'school') {
+    return res.status(403).json({ success: false, error: 'School accounts only.' });
+  }
+  if (req.user?.staffRole === 'class_teacher' || req.user?.staffRole === 'subject_teacher') {
+    return res.status(403).json({ success: false, error: 'Only the school owner or an admin can manage classes.' });
+  }
+  next();
+};
+const cleanClassName = (v) => String(v ?? '').trim().replace(/\s+/g, ' ').slice(0, 50);
+
+router.post('/school', requireClassEditor, async (req, res) => {
+  try {
+    const schoolId = req.user.schoolId;
+    const name = cleanClassName(req.body?.className);
+    if (!name) return res.status(400).json({ success: false, error: 'Class name is required.' });
+    const capacity = Math.min(Math.max(parseInt(req.body?.capacity, 10) || 50, 1), 1000);
+
+    const existing = await pool.query(
+      `SELECT id, archived_at FROM classes WHERE school_id = $1 AND LOWER(TRIM(class_name)) = LOWER($2)`,
+      [schoolId, name]
+    );
+    if (existing.rows.length) {
+      if (existing.rows[0].archived_at) { // bring an archived class back
+        const back = await pool.query(
+          `UPDATE classes SET archived_at = NULL, capacity = $2 WHERE id = $1 RETURNING id, class_name, capacity`,
+          [existing.rows[0].id, capacity]
+        );
+        return res.status(200).json({ success: true, data: back.rows[0], restored: true });
+      }
+      return res.status(409).json({ success: false, error: `A class named "${name}" already exists.` });
+    }
+    const created = await insertClassResilient(pool, schoolId, name, capacity);
+    if (!created) return res.status(409).json({ success: false, error: `A class named "${name}" already exists.` });
+    res.status(201).json({ success: true, data: { id: created.id, class_name: created.class_name, capacity: created.capacity } });
+  } catch (error) {
+    console.error('❌ Create Class Error:', error);
+    res.status(500).json({ success: false, error: 'Failed to create class.' });
+  }
+});
+
+router.put('/school/:id', requireClassEditor, async (req, res) => {
+  try {
+    const schoolId = req.user.schoolId;
+    const current = await pool.query('SELECT id, class_name, origin_name FROM classes WHERE id = $1 AND school_id = $2', [req.params.id, schoolId]);
+    if (!current.rows.length) return res.status(404).json({ success: false, error: 'Class not found.' });
+
+    const sets = []; const params = [];
+    if (req.body?.className !== undefined) {
+      const name = cleanClassName(req.body.className);
+      if (!name) return res.status(400).json({ success: false, error: 'Class name cannot be empty.' });
+      const clash = await pool.query(
+        `SELECT id FROM classes WHERE school_id = $1 AND LOWER(TRIM(class_name)) = LOWER($2) AND id <> $3`,
+        [schoolId, name, req.params.id]
+      );
+      if (clash.rows.length) return res.status(409).json({ success: false, error: `A class named "${name}" already exists.` });
+      params.push(name); sets.push(`class_name = $${params.length}`);
+      // Remember the template name this class came from (first rename only).
+      if (!current.rows[0].origin_name && current.rows[0].class_name !== name) {
+        params.push(current.rows[0].class_name); sets.push(`origin_name = $${params.length}`);
+      }
+    }
+    if (req.body?.capacity !== undefined) {
+      params.push(Math.min(Math.max(parseInt(req.body.capacity, 10) || 50, 1), 1000)); sets.push(`capacity = $${params.length}`);
+    }
+    if (!sets.length) return res.status(400).json({ success: false, error: 'Nothing to update.' });
+    params.push(req.params.id, schoolId);
+    const result = await pool.query(
+      `UPDATE classes SET ${sets.join(', ')} WHERE id = $${params.length - 1} AND school_id = $${params.length}
+       RETURNING id, class_name, capacity`,
+      params
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ success: false, error: 'A class with that name already exists.' });
+    console.error('❌ Update Class Error:', error);
+    res.status(500).json({ success: false, error: 'Failed to update class.' });
+  }
+});
+
+router.delete('/school/:id', requireClassEditor, async (req, res) => {
+  try {
+    const schoolId = req.user.schoolId;
+    const active = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM enrollments WHERE class_id = $1 AND school_id = $2 AND status = 'active'`,
+      [req.params.id, schoolId]
+    );
+    if (active.rows[0].n > 0) {
+      return res.status(409).json({
+        success: false,
+        error: `${active.rows[0].n} active student(s) are enrolled in this class. Move them first.`,
+        code: 'CLASS_IN_USE',
+      });
+    }
+    const result = await pool.query(
+      `UPDATE classes SET archived_at = CURRENT_TIMESTAMP WHERE id = $1 AND school_id = $2 AND archived_at IS NULL RETURNING id`,
+      [req.params.id, schoolId]
+    );
+    if (!result.rows.length) return res.status(404).json({ success: false, error: 'Class not found.' });
+    res.json({ success: true, message: 'Class archived.' });
+  } catch (error) {
+    console.error('❌ Archive Class Error:', error);
+    res.status(500).json({ success: false, error: 'Failed to archive class.' });
   }
 });
 

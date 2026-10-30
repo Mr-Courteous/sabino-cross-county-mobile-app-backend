@@ -110,6 +110,30 @@ function buildDocumentsRouter(typeKey) {
     }
   });
 
+  // ── GET /admin/pending_review ──
+  router.get('/admin/pending_review', async (req, res) => {
+    try {
+      const { subjectId, classId, term, session } = req.query;
+      const conditions = ['school_id = $1', "status = 'pending_review'"];
+      const params = [req.user.schoolId];
+
+      if (subjectId) { params.push(subjectId); conditions.push(`subject_id = $${params.length}`); }
+      if (classId) { params.push(classId); conditions.push(`class_id = $${params.length}`); }
+      if (term) { params.push(term); conditions.push(`term = $${params.length}`); }
+      if (session) { params.push(session); conditions.push(`session = $${params.length}`); }
+
+      const result = await pool.query(
+        `SELECT * FROM ${config.table} WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC`,
+        params
+      );
+
+      res.json({ success: true, data: result.rows.map(rowToCamel), count: result.rowCount });
+    } catch (error) {
+      console.error(`[teacher-ai/${typeKey}] admin pending list error:`, error.message);
+      res.status(500).json({ success: false, error: 'Failed to fetch pending documents.' });
+    }
+  });
+
   // ── GET /admin/approved — Admin oversight (addendum §1.5): "Once
   //    Approved ... becomes visible to Admin under Academics, read-only."
   //    Any authenticated school-side user can call this (owner or staff);
@@ -150,10 +174,14 @@ function buildDocumentsRouter(typeKey) {
       }
       const row = result.rows[0];
       const identity = getTeacherIdentity(req);
-      if (!isSameTeacher(identity, row) && row.status !== 'approved') {
+      
+      const isAdmin = identity.type === 'owner';
+      const isVisibleToAdmin = isAdmin && (row.status === 'approved' || row.status === 'pending_review');
+      
+      if (!isSameTeacher(identity, row) && row.status !== 'approved' && !isVisibleToAdmin) {
         return res.status(403).json({
           success: false,
-          error: 'This document is still a draft and is only visible to the teacher who created it.',
+          error: 'This document is only visible to the teacher who created it, or to an admin if it is pending review.',
         });
       }
       res.json({ success: true, data: rowToCamel(row) });
@@ -277,13 +305,30 @@ function buildDocumentsRouter(typeKey) {
         }
         const row = existing.rows[0];
         const identity = getTeacherIdentity(req);
-        if (!isSameTeacher(identity, row)) {
-          return res.status(403).json({ success: false, error: 'You can only approve your own documents.' });
+        
+        const isOwner = identity.type === 'owner';
+        const isAuthor = isSameTeacher(identity, row);
+
+        if (!isOwner && !isAuthor) {
+          return res.status(403).json({ success: false, error: 'You do not have permission to approve this document.' });
         }
+
         if (row.status === 'approved') {
           return res.status(409).json({ success: false, error: 'This document is already approved.' });
         }
 
+        if (!isOwner) {
+          // If a normal teacher clicks approve, send for review instead.
+          const result = await pool.query(
+            `UPDATE ${config.table}
+             SET status = 'pending_review', updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 RETURNING *`,
+            [req.params.id]
+          );
+          return res.json({ success: true, message: 'Document sent for review.', data: rowToCamel(result.rows[0]) });
+        }
+
+        // Only owners (admins) can actually approve it.
         const result = await pool.query(
           `UPDATE ${config.table}
            SET status = 'approved', approved_at = CURRENT_TIMESTAMP,
@@ -296,7 +341,7 @@ function buildDocumentsRouter(typeKey) {
         res.json({ success: true, data: rowToCamel(result.rows[0]) });
       } catch (error) {
         console.error(`[teacher-ai/${typeKey}] approve error:`, error.message);
-        res.status(500).json({ success: false, error: 'Failed to approve document.' });
+        res.status(500).json({ success: false, error: 'Failed to process document approval.' });
       }
     }
   );

@@ -424,6 +424,38 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
+// ── Free trial ──────────────────────────────────────────────────────────
+// A brand-new school gets TRIAL_DAYS (default 3) of full access straight after
+// registration: payment_status = 'completed' with subscription_expiry set that
+// many days ahead. checkSubscription (on every request) and the daily cron then
+// expire it automatically - no extra machinery. A real purchase (RevenueCat /
+// Flutterwave) simply overwrites the status and expiry as it always did.
+//   TRIAL_DAYS=0            switch the trial off (schools go to payment as before)
+//   TRIAL_ONE_PER_PHONE     'false' to allow several trials per phone number
+const TRIAL_DAYS = Number.isFinite(Number(process.env.TRIAL_DAYS)) && process.env.TRIAL_DAYS !== ''
+  ? Number(process.env.TRIAL_DAYS)
+  : 3;
+
+async function isTrialEligible(phone) {
+  if (!(TRIAL_DAYS > 0)) return false;
+  if (!phone || process.env.TRIAL_ONE_PER_PHONE === 'false') return true;
+  try {
+    const digits = String(phone).replace(/\D/g, '');
+    if (digits.length < 7) return true;
+    const used = await pool.query(
+      `SELECT 1 FROM schools
+        WHERE trial_started_at IS NOT NULL
+          AND RIGHT(REGEXP_REPLACE(COALESCE(phone, ''), '\\D', '', 'g'), 9) = RIGHT($1, 9)
+        LIMIT 1`,
+      [digits]
+    );
+    return used.rows.length === 0;
+  } catch (e) {
+    // trial_started_at column missing (migration not run) - don't block sign-ups
+    return true;
+  }
+}
+
 // Create school (or resume pending registration)
 router.post('/', async (req, res) => {
   try {
@@ -506,15 +538,17 @@ router.post('/', async (req, res) => {
     const normalizedEmail = email.trim().toLowerCase();
 
     // New registration path
+    const trialEligible = await isTrialEligible(phone);
+    const trialExpiry = trialEligible ? new Date(Date.now() + TRIAL_DAYS * 86400000) : null;
     const hashedPassword = await bcrypt.hash(password, 10);
     const registrationCode = crypto.randomBytes(4).toString('hex').toUpperCase();
 
     const result = await pool.query(
       `INSERT INTO schools (
         registration_code, name, email, password, school_type,
-        country_id, country, phone, payment_status
+        country_id, country, phone, payment_status, subscription_expiry
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING id, name, email, country_id`,
       [
         registrationCode,
@@ -525,11 +559,25 @@ router.post('/', async (req, res) => {
         country_id || null,
         country || null,
         phone || null,
-        'pending'
+        trialEligible ? 'completed' : 'pending',
+        trialExpiry
       ]
     );
 
     const school = result.rows[0];
+
+    // Remember that this school used its trial (best effort: needs the
+    // 2026_10_free_trial migration; sign-up works without it).
+    if (trialEligible) {
+      try {
+        await pool.query(
+          'UPDATE schools SET is_trial = true, trial_started_at = CURRENT_TIMESTAMP, trial_ends_at = subscription_expiry WHERE id = $1',
+          [school.id]
+        );
+      } catch (trialMarkErr) {
+        console.warn('Warning: could not record trial start (run the free-trial migration):', trialMarkErr.message);
+      }
+    }
 
     // Auto-create default academic session for immediate use
     const currentYear = new Date().getFullYear();
@@ -595,7 +643,10 @@ router.post('/', async (req, res) => {
           name,
           type: 'school',
           countryId: resolvedCountryId,
-          paymentStatus: 'pending'
+          paymentStatus: trialEligible ? 'completed' : 'pending',
+          trial: trialEligible
+            ? { isTrial: true, days: TRIAL_DAYS, expiresAt: trialExpiry.toISOString() }
+            : { isTrial: false }
         }
       }
     });

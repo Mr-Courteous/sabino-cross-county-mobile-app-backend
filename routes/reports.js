@@ -9,6 +9,8 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const nodemailer = require('nodemailer');
+const assessment = require('../utils/assessment');
+const { drawCustomResultsTable } = require('../utils/reportTable');
 
 // Reuse existing transporter configuration
 const transporter = nodemailer.createTransport({
@@ -87,6 +89,18 @@ async function tryLoadImage(doc, imageSource, x, y, width, height, imageType = '
 // All report routes require a valid token
 router.use(authMiddleware.authenticateToken);
 
+/**
+ * Layout for a student's report card. { custom:false } when every record is
+ * on the built-in layout - callers then keep their original rendering.
+ */
+async function loadReportLayout(rows, schoolId, enrollmentId, term, sessionId) {
+  if (!Array.isArray(rows) || !rows.some((r) => r.template_snapshot)) return { custom: false, columns: [], rows: [] };
+  const cr = await pool.query('SELECT class_id FROM enrollments WHERE id = $1', [enrollmentId]);
+  const stats = await assessment.getClassSubjectStats(pool, schoolId, cr.rows[0]?.class_id, sessionId, term);
+  return assessment.buildReportLayout(rows, stats);
+}
+const totalMaxFor = (row) => assessment.totalMaxOf(row.template_snapshot?.components || assessment.DEFAULT_COMPONENTS);
+
 // Helper function to calculate letter grade from numeric score
 function calculateGrade(score) {
   const numScore = parseFloat(score);
@@ -142,6 +156,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
         COALESCE(sc.ca4_score, 0) as ca4_score,
         COALESCE(sc.exam_score, 0) as exam_score,
         COALESCE(sc.total_score, 0) as total_score,
+        sc.subject_id, sc.components, sc.template_snapshot, sc.grading_snapshot,
         COALESCE(sc.teacher_remark, '') as teacher_remark,
         COALESCE(ay.session_name, '') as session_name
       FROM enrollments e
@@ -242,7 +257,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
         const sorted = [...validScores].sort((a, b) => b.total_score - a.total_score);
         const topSubject = sorted.length > 0 ? sorted[0].subject_name : "their studies";
         const strugglingSubject = sorted.length > 1 ? sorted[sorted.length - 1].subject_name : "other areas";
-        const performanceSummary = data.map(r => `${r.subject_name}: ${r.total_score}/100`).join(", ");
+        const performanceSummary = data.map(r => `${r.subject_name}: ${r.total_score}/${totalMaxFor(r)}`).join(", ");
 
         const aiCompletion = await openai.chat.completions.create({
           model: "openai/gpt-oss-120b", // llama-3.3-70b-versatile was decommissioned by Groq on 2026-08-16
@@ -439,6 +454,11 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
     const leftX = 50;
     const tableW = 500;
 
+    const customLayout = await loadReportLayout(deduplicatedData, schoolId, enrollmentId, termInt, sessionIdInt);
+    if (customLayout.custom) {
+      // This school's own columns / grading (see utils/reportTable.js)
+      tableY = drawCustomResultsTable(doc, { x: leftX, y: tableY, width: tableW, layout: customLayout, themeColor });
+    } else {
     // Header
     doc.fillColor(themeColor).rect(leftX, tableY, tableW, 20).fill();
     doc.fillColor('#ffffff').fontSize(10).font('Helvetica-Bold');
@@ -482,6 +502,7 @@ router.post('/email/official-report/:enrollmentId', checkSubscription, async (re
 
     // Border
     doc.strokeColor(themeColor).lineWidth(1).rect(leftX, 150, tableW, tableY - 150).stroke();
+    }
 
     doc.fillColor('#000');
 
@@ -736,15 +757,14 @@ router.get('/data/student/:enrollmentId', checkSubscription, async (req, res) =>
     const query = `
       SELECT 
         g.subject_name as subject_name,
+        s.subject_id, s.components, s.template_snapshot, s.grading_snapshot, s.total_score,
         COALESCE(s.ca1_score, 0) as ca1_score,
         COALESCE(s.ca2_score, 0) as ca2_score,
         COALESCE(s.ca3_score, 0) as ca3_score,
         COALESCE(s.ca4_score, 0) as ca4_score,
         COALESCE(s.exam_score, 0) as exam_score,
-        ROUND(COALESCE(s.ca1_score, 0) + COALESCE(s.ca2_score, 0) + COALESCE(s.ca3_score, 0) + 
-         COALESCE(s.ca4_score, 0) + COALESCE(s.exam_score, 0)) as student_total,
-        ROUND(AVG(COALESCE(s2.ca1_score, 0) + COALESCE(s2.ca2_score, 0) + COALESCE(s2.ca3_score, 0) + 
-                  COALESCE(s2.ca4_score, 0) + COALESCE(s2.exam_score, 0))::NUMERIC, 0) as class_average
+        ROUND(COALESCE(s.total_score, 0)) as student_total,
+        ROUND(AVG(COALESCE(s2.total_score, 0))::NUMERIC, 0) as class_average
       FROM scores s
       JOIN global_subjects g ON s.subject_id = g.id
       JOIN enrollments e ON s.enrollment_id = e.id
@@ -757,7 +777,8 @@ router.get('/data/student/:enrollmentId', checkSubscription, async (req, res) =>
         AND e.school_id = $2 
         AND s.term = $3 
         AND s.session_id = $4
-      GROUP BY g.subject_name, s.ca1_score, s.ca2_score, s.ca3_score, s.ca4_score, s.exam_score, s.subject_id
+      GROUP BY g.subject_name, s.ca1_score, s.ca2_score, s.ca3_score, s.ca4_score, s.exam_score, s.subject_id,
+               s.total_score, s.components, s.template_snapshot, s.grading_snapshot
       ORDER BY g.subject_name;
     `;
 
@@ -771,7 +792,15 @@ router.get('/data/student/:enrollmentId', checkSubscription, async (req, res) =>
       });
     }
 
-    res.json({ success: true, data: result.rows });
+    // Custom template: send a ready-made table (columns + cells, graded on
+    // each record's own scale). Built-in schools get exactly the old payload.
+    const studentLayout = await loadReportLayout(result.rows, schoolId, enrollmentId, parseInt(term), parseInt(sessionId));
+    const studentRows = result.rows.map(({ components, template_snapshot, grading_snapshot, total_score, ...rest }) => rest);
+    res.json({
+      success: true,
+      data: studentRows,
+      layout: studentLayout.custom ? { columns: studentLayout.columns, rows: studentLayout.rows, total_max: studentLayout.total_max } : null
+    });
   } catch (error) {
     console.error('❌ Student Report Error:', error.message);
     res.status(500).json({ success: false, error: error.message });
@@ -811,13 +840,7 @@ router.get('/data/class/:classId', authMiddleware.requireSchool, checkSubscripti
           st.id as student_id,
           st.first_name,
           st.last_name,
-          SUM(
-            COALESCE(s.ca1_score, 0) + 
-            COALESCE(s.ca2_score, 0) + 
-            COALESCE(s.ca3_score, 0) + 
-            COALESCE(s.ca4_score, 0) + 
-            COALESCE(s.exam_score, 0)
-          ) as aggregate_total
+          SUM(COALESCE(s.total_score, 0)) as aggregate_total
         FROM enrollments e
         JOIN students st ON e.student_id = st.id
         LEFT JOIN scores s ON s.enrollment_id = e.id 
@@ -837,25 +860,15 @@ router.get('/data/class/:classId', authMiddleware.requireSchool, checkSubscripti
       SELECT 
         r.*,
         g.subject_name,
+        s.subject_id, s.components, s.template_snapshot, s.grading_snapshot,
         COALESCE(s.ca1_score, 0) as ca1_score,
         COALESCE(s.ca2_score, 0) as ca2_score,
         COALESCE(s.ca3_score, 0) as ca3_score,
         COALESCE(s.ca4_score, 0) as ca4_score,
         COALESCE(s.exam_score, 0) as exam_score,
-        ROUND(
-          COALESCE(s.ca1_score, 0) + 
-          COALESCE(s.ca2_score, 0) + 
-          COALESCE(s.ca3_score, 0) + 
-          COALESCE(s.ca4_score, 0) + 
-          COALESCE(s.exam_score, 0)
-        ) as subject_total,
-        ROUND(AVG(
-          COALESCE(s2.ca1_score, 0) + 
-          COALESCE(s2.ca2_score, 0) + 
-          COALESCE(s2.ca3_score, 0) + 
-          COALESCE(s2.ca4_score, 0) + 
-          COALESCE(s2.exam_score, 0)
-        ) OVER (PARTITION BY s.subject_id), 2) as subject_class_average
+        ROUND(COALESCE(s.total_score, 0)) as subject_total,
+        COALESCE(s.total_score, 0) as raw_total,
+        ROUND(AVG(COALESCE(s2.total_score, 0)) OVER (PARTITION BY s.subject_id), 2) as subject_class_average
       FROM RankedStudents r
       LEFT JOIN scores s ON s.enrollment_id = r.enrollment_id 
                          AND s.term = $3 
@@ -906,12 +919,41 @@ router.get('/data/class/:classId', authMiddleware.requireSchool, checkSubscripti
           exam_score: row.exam_score,
           subject_total: row.subject_total,
           total_score: row.subject_total,
-          subject_class_average: row.subject_class_average
+          subject_class_average: row.subject_class_average,
+          // internal (stripped below): lets us build each student's table
+          _subject_id: row.subject_id,
+          _components: row.components,
+          _template_snapshot: row.template_snapshot,
+          _grading_snapshot: row.grading_snapshot,
+          _raw_total: row.raw_total
         });
       }
 
       return acc;
     }, []);
+
+    // Custom template: build each student's table from their own records
+    // (students can differ if some records were edited after a template change).
+    const anyCustom = grouped.some((st) => st.subjects.some((x) => x._template_snapshot));
+    const classStats = anyCustom
+      ? await assessment.getClassSubjectStats(pool, schoolId, parseInt(classId), parseInt(sessionId), parseInt(term))
+      : null;
+    grouped.forEach((st) => {
+      if (anyCustom) {
+        const asRows = st.subjects.map((x) => ({
+          subject_id: x._subject_id,
+          subject_name: x.subject_name,
+          total_score: x._raw_total,
+          components: x._components,
+          template_snapshot: x._template_snapshot,
+          grading_snapshot: x._grading_snapshot,
+          ca1_score: x.ca1_score, ca2_score: x.ca2_score, ca3_score: x.ca3_score, ca4_score: x.ca4_score, exam_score: x.exam_score
+        }));
+        const lay = assessment.buildReportLayout(asRows, classStats);
+        if (lay.custom) st.layout = { columns: lay.columns, rows: lay.rows, total_max: lay.total_max };
+      }
+      st.subjects = st.subjects.map(({ _subject_id, _components, _template_snapshot, _grading_snapshot, _raw_total, ...rest }) => rest);
+    });
 
     res.json({
       success: true,
@@ -957,9 +999,8 @@ router.post('/regenerate-remark/:enrollmentId', authMiddleware.authenticateToken
       SELECT 
         s.first_name, s.last_name,
         sub.subject_name,
-        COALESCE(sc.ca1_score, 0) + COALESCE(sc.ca2_score, 0) + 
-        COALESCE(sc.ca3_score, 0) + COALESCE(sc.ca4_score, 0) + 
-        COALESCE(sc.exam_score, 0) AS total_score
+        COALESCE(sc.total_score, 0) AS total_score,
+        sc.template_snapshot
       FROM enrollments e
       JOIN students s ON e.student_id = s.id
       JOIN scores sc ON sc.enrollment_id = e.id AND sc.term = $3 AND sc.session_id = $4
@@ -980,7 +1021,7 @@ router.post('/regenerate-remark/:enrollmentId', authMiddleware.authenticateToken
     const sorted = [...validScores].sort((a, b) => b.total_score - a.total_score);
     const topSubject = sorted.length > 0 ? sorted[0].subject_name : 'their studies';
     const strugglingSubject = sorted.length > 1 ? sorted[sorted.length - 1].subject_name : 'other areas';
-    const performanceSummary = data.map(r => `${r.subject_name}: ${r.total_score}/100`).join(', ');
+    const performanceSummary = data.map(r => `${r.subject_name}: ${r.total_score}/${totalMaxFor(r)}`).join(', ');
 
     const aiCompletion = await openai.chat.completions.create({
       model: 'openai/gpt-oss-120b', // llama-3.3-70b-versatile was decommissioned by Groq on 2026-08-16
@@ -1118,6 +1159,7 @@ router.get('/preview/official-report/:enrollmentId', async (req, res) => {
         COALESCE(sc.ca4_score, 0) as ca4_score,
         COALESCE(sc.exam_score, 0) as exam_score,
         COALESCE(sc.total_score, 0) as total_score,
+        sc.subject_id, sc.components, sc.template_snapshot, sc.grading_snapshot,
         COALESCE(sc.teacher_remark, '') as teacher_remark,
         COALESCE(ay.session_name, '') as session_name
       FROM enrollments e
@@ -1221,6 +1263,11 @@ router.get('/preview/official-report/:enrollmentId', async (req, res) => {
     const deduplicatedData = Object.values(uniqueSubjects);
 
     // Add scores table
+    const customLayoutB = await loadReportLayout(deduplicatedData, schoolId, enrollmentId, termInt, sessionIdInt);
+    let tableYEnd;
+    if (customLayoutB.custom) {
+      tableYEnd = drawCustomResultsTable(doc, { x: 50, y: 165, width: 500, layout: customLayoutB, themeColor });
+    } else {
     const tableStartY = 165;
     const subjectColX = 50;
     const ca1ColX = 160;
@@ -1277,6 +1324,9 @@ router.get('/preview/official-report/:enrollmentId', async (req, res) => {
 
       tableY += rowHeight;
     });
+      tableYEnd = tableY;
+    }
+    const tableY = tableYEnd;
 
     // Add AI remark
     doc.fontSize(10).fillColor('#333').font('Helvetica-Bold').text('Principal\'s Remark:', 50, tableY + 20);
@@ -1329,6 +1379,7 @@ router.get('/preview/student-grades/:enrollmentId', async (req, res) => {
         pref.logo_url,
         sub.subject_name,
         sc.ca1_score, sc.ca2_score, sc.ca3_score, sc.ca4_score, sc.exam_score, sc.total_score,
+        sc.subject_id, sc.components, sc.template_snapshot, sc.grading_snapshot,
         ay.session_name
       FROM enrollments e
       JOIN students s ON e.student_id = s.id
@@ -1398,6 +1449,10 @@ router.get('/preview/student-grades/:enrollmentId', async (req, res) => {
     });
     const grades = Object.values(uniqueGrades);
 
+    const customLayoutC = await loadReportLayout(grades, req.user?.schoolId, enrollmentId, termInt, sessionIdInt);
+    if (customLayoutC.custom) {
+      drawCustomResultsTable(doc, { x: 50, y: 165, width: 500, layout: customLayoutC, themeColor });
+    } else {
     // Scores table
     const tableY = 165;
     doc.fillColor(themeColor).rect(50, tableY, 415, 25).fill();
@@ -1427,6 +1482,8 @@ router.get('/preview/student-grades/:enrollmentId', async (req, res) => {
       doc.text(String(grade.total_score || 0), 410, rowY - 3, { width: 45, align: 'center' });
       rowY += 18;
     });
+
+    }
 
     doc.end();
 
@@ -1507,7 +1564,8 @@ router.get('/pdf/:enrollmentId', checkSubscription, async (req, res) => {
         COALESCE(sc.ca3_score, 0) as ca3_score,
         COALESCE(sc.ca4_score, 0) as ca4_score,
         COALESCE(sc.exam_score, 0) as exam_score,
-        COALESCE(sc.total_score, 0) as total_score
+        COALESCE(sc.total_score, 0) as total_score,
+        sc.subject_id, sc.components, sc.template_snapshot, sc.grading_snapshot
       FROM scores sc
       LEFT JOIN global_subjects sub ON sc.subject_id = sub.id
       WHERE sc.enrollment_id = $1 AND sc.term = $2 AND sc.session_id = $3
@@ -1591,6 +1649,13 @@ router.get('/pdf/:enrollmentId', checkSubscription, async (req, res) => {
     });
     const deduplicatedData = Object.values(uniqueSubjects);
 
+    const customLayoutD = hasScores
+      ? await loadReportLayout(deduplicatedData, resolvedSchoolId, enrollmentId, termInt, sessionIdInt)
+      : { custom: false };
+    if (customLayoutD.custom) {
+      tableY = drawCustomResultsTable(doc, { x: leftX, y: tableY, width: tableW, layout: customLayoutD, themeColor });
+      doc.fillColor('#000');
+    } else {
     // Table header
     doc.fillColor(themeColor).rect(leftX, tableY, tableW, 20).fill();
     doc.fillColor('#ffffff').fontSize(10).font('Helvetica-Bold');
@@ -1638,6 +1703,7 @@ router.get('/pdf/:enrollmentId', checkSubscription, async (req, res) => {
 
     doc.strokeColor(themeColor).lineWidth(1).rect(leftX, 150, tableW, tableY - 150).stroke();
     doc.fillColor('#000');
+    }
 
     // ── PRINCIPAL'S COMMENT ─────────────────────────────────────────────
     const remarkY = tableY + 15;

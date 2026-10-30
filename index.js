@@ -42,7 +42,11 @@ const ALLOWED_ORIGINS = (() => {
     'https://sabino-edu-super-admin.vercel.app'
   ]);
   if (process.env.SUPERADMIN_CONSOLE_URL) origins.add(process.env.SUPERADMIN_CONSOLE_URL.replace(/\/$/, ''));
-  if (process.env.CLIENT_URL)             origins.add(process.env.CLIENT_URL.replace(/\/$/, ''));
+  // CLIENT_URL may hold several origins separated by commas,
+  // e.g. "https://app.example.com,https://www.example.com"
+  if (process.env.CLIENT_URL) {
+    process.env.CLIENT_URL.split(',').map((u) => u.trim().replace(/\/$/, '')).filter(Boolean).forEach((u) => origins.add(u));
+  }
   if (process.env.APP_BASE_URL)           origins.add(process.env.APP_BASE_URL.replace(/\/$/, ''));
   return origins;
 })();
@@ -137,6 +141,11 @@ app.use('/api/teacher-ai', teacherAiRouter);
 // terminal summary, sign-off trail). See routes/attendance/.
 app.use('/api/attendance', attendanceRouter);
 app.use('/api/document-library', documentLibraryRoutes);
+// Flexible results (school-defined result template + grading) and academic
+// structure (class arms, teacher assignments). See routes/assessment.js and
+// routes/academic-structure.js.
+app.use('/api/assessment', require('./routes/assessment'));
+app.use('/api/academic-structure', require('./routes/academic-structure'));
 app.use('/api/superadmin', require('./routes/superadmin'));
 
 // Public data endpoints (subjects, academic sessions, enrollments)
