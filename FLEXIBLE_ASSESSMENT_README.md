@@ -96,3 +96,35 @@ Notes
    is_trial=true, trial_started_at=now(), trial_ends_at=now()+interval '3 days' WHERE payment_status='pending';`
   (run only if you really want that).
 * Tests: `tests/trial.test.js`.
+
+
+---
+# Parent accounts (one login, many children)
+A parent registers once (email OTP), then adds each child with the child's **registration number + the
+school-issued parent link code**. All children show on one dashboard (scores, report cards, attendance, profile).
+
+Setup
+1. Back up, then `node scripts/run-parent-access-migration.js` (adds `parents`, `parent_students`, student
+   `parent_link_code` + guardian columns, `schools.parent_auto_link`; gives every existing student a code;
+   a trigger gives new students one automatically). Safe to repeat.
+2. Deploy backend (`routes/parents.js` is mounted in `index.js` as `/api/parents`) and the app.
+3. Schools: Dashboard -> **Parent Access** shows each student's link code (Share button), lets the school record the
+   guardian's email/phone, switch **auto-link by guardian email** on/off, see who is linked, remove access or make
+   a new code.
+
+How it is kept safe
+* A parent token is its own type; the shared `authenticateToken` rejects it, so it cannot reach any school or student route.
+* To look at a child the app asks for a **child token** (a normal student token carrying `viaParent`, valid 1 hour).
+  Every existing student endpoint then works unchanged and only returns that child. `middleware/auth.js` makes
+  `viaParent` tokens **read-only** (only e-mailing a report card is allowed).
+* Linking needs registration number AND code (15 attempts/hour per parent). A wrong code and an unknown student give the same message.
+* Auto-link by email is OFF until a school turns it on. A link the school/parent removed is kept as `revoked` and is not
+  re-created by auto-link. Regenerating a code kills the old one.
+* If one child's school subscription lapses, only that child is locked (402); the other children still show.
+* Parents never see school pricing/payment screens.
+
+Notes
+* Parent sessions last 1 hour (same as students), then log in again.
+* Report cards: web = Download PDF + e-mail; phone app = e-mail to the parent's address (same as the student screen does).
+* Not changed: students' own logins, school/teacher logins.
+* Tests: `tests/parents.test.js` (register/OTP, linking, isolation between parents, read-only, expiry, school controls).

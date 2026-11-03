@@ -146,6 +146,8 @@ app.use('/api/document-library', documentLibraryRoutes);
 // routes/academic-structure.js.
 app.use('/api/assessment', require('./routes/assessment'));
 app.use('/api/academic-structure', require('./routes/academic-structure'));
+// Parent accounts (one login, many children). See routes/parents.js.
+app.use('/api/parents', require('./routes/parents'));
 app.use('/api/superadmin', require('./routes/superadmin'));
 
 // Public data endpoints (subjects, academic sessions, enrollments)

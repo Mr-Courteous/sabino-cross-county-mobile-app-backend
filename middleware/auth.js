@@ -74,6 +74,24 @@ exports.authenticateToken = (req, res, next) => {
       });
     }
 
+    // A parent looking at a child uses a student-type token carrying `viaParent`
+    // (issued by POST /api/parents/children/:id/token). Parents get VIEW-ONLY
+    // access: anything that could change data is refused. The one exception is
+    // e-mailing a report card, which only sends data out.
+    if (decoded.viaParent) {
+      const method = req.method.toUpperCase();
+      const path = (req.originalUrl || req.url || '').split('?')[0];
+      const readOnly = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+      const emailReport = method === 'POST' && /^\/api\/reports\/email\/official-report\/\d+\/?$/.test(path);
+      if (!readOnly && !emailReport) {
+        return res.status(403).json({
+          success: false,
+          error: 'Parents have view-only access.',
+          code: 'PARENT_READ_ONLY'
+        });
+      }
+    }
+
     // Attach full decoded payload to req.user
     // School tokens:  req.user.id, req.user.schoolId, req.user.type = 'school'
     // Student tokens: req.user.studentId, req.user.schoolId, req.user.type = 'student'
