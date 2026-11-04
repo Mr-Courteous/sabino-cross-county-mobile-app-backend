@@ -92,6 +92,32 @@ function generateInviteCode() {
   return code;
 }
 
+/**
+ * Who may edit a staff account's details / class:
+ *   - the school OWNER: anyone;
+ *   - a full ADMIN: class teachers only (never another admin - same hierarchy
+ *     rule as deactivate/delete);
+ *   - class teachers: nobody.
+ */
+const ownerOrAdminForTeacher = async (req, res, next) => {
+  try {
+    const isAdminAccount = req.user?.type === 'school' && req.user?.role === 'admin';
+    if (!isAdminAccount) return authMiddleware.requireOwner(req, res, next); // owner (or rejects non-school tokens)
+    if (req.user.staffRole !== 'admin') {
+      return res.status(403).json({ success: false, error: 'Only the school owner or an admin can edit staff.', code: 'STAFF_EDIT_FORBIDDEN' });
+    }
+    const t = await pool.query('SELECT role FROM staff WHERE id = $1 AND school_id = $2', [req.params.staffId, req.user.schoolId]);
+    if (t.rows.length === 0) return res.status(404).json({ success: false, error: 'Staff account not found.' });
+    if (t.rows[0].role !== 'class_teacher') {
+      return res.status(403).json({ success: false, error: 'Only the school owner can edit another admin.', code: 'ADMIN_EDIT_OWNER_ONLY' });
+    }
+    next();
+  } catch (e) {
+    console.error('Error [staff-management] permission check:', e.message);
+    res.status(500).json({ success: false, error: 'Could not verify permissions.' });
+  }
+};
+
 function actorInfo(req) {
   return {
     actorType: req.user.role === 'admin' ? 'admin' : 'owner',
@@ -468,6 +494,195 @@ router.delete('/admins/invite/:inviteId', authMiddleware.requireOwner, async (re
 });
 
 /**
+ * @route   PATCH /api/staff/admins/:staffId
+ * @desc    Edit a staff member's details: name, email and phone. The email is
+ *          what they log in with, so changing it has consequences that are
+ *          handled here:
+ *            - it must not clash with another staff account, a school owner
+ *              account, or a pending invite;
+ *            - if the person has NEVER logged in yet (status
+ *              'password_reset_required') the temporary password went to the
+ *              OLD address, so a fresh temporary password is created and sent
+ *              to the NEW one;
+ *            - if they already use the account, both the old and the new
+ *              address get a notice (so nobody is locked out silently).
+ *          Role and class are deliberately not edited here (role changes
+ *          alter permissions; use PATCH /admins/:staffId/class for the class).
+ * @access  Private (owner: any staff account; full admin: class teachers only)
+ * @body    { fullName?, email?, phone?, role? }   phone: '' clears it; role is OWNER-ONLY
+ */
+router.patch('/admins/:staffId', ownerOrAdminForTeacher, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { fullName, email, phone, role } = req.body || {};
+    if (fullName === undefined && email === undefined && phone === undefined && role === undefined) {
+      return res.status(400).json({ success: false, error: 'Send at least one of fullName, email, phone or role.' });
+    }
+    const actorIsAdmin = req.user?.role === 'admin';
+    if (role !== undefined && actorIsAdmin) {
+      return res.status(403).json({ success: false, error: 'Only the school owner can change a role.', code: 'ROLE_CHANGE_OWNER_ONLY' });
+    }
+
+    await client.query('BEGIN');
+    const cur = await client.query(
+      'SELECT id, full_name, email, phone, role, status FROM staff WHERE id = $1 AND school_id = $2 FOR UPDATE',
+      [req.params.staffId, req.user.schoolId]
+    );
+    if (cur.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, error: 'Staff account not found.' });
+    }
+    const before = cur.rows[0];
+
+    const sets = [];
+    const params = [];
+    const changed = {};
+
+    if (fullName !== undefined) {
+      const name = String(fullName).trim().replace(/\s+/g, ' ');
+      if (name.length < 2 || name.length > 255) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ success: false, error: 'Name must be between 2 and 255 characters.' });
+      }
+      if (name !== before.full_name) { params.push(name); sets.push(`full_name = $${params.length}`); changed.fullName = { from: before.full_name, to: name }; }
+    }
+
+    if (phone !== undefined) {
+      const ph = String(phone ?? '').trim();
+      if (ph.length > 50) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ success: false, error: 'Phone number is too long.' });
+      }
+      const next = ph || null;
+      if (next !== (before.phone || null)) { params.push(next); sets.push(`phone = $${params.length}`); changed.phone = true; }
+    }
+
+    if (role !== undefined) {
+      if (!ALLOWED_STAFF_ROLES.includes(role)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ success: false, error: `role must be one of: ${ALLOWED_STAFF_ROLES.join(', ')}` });
+      }
+      if (role !== before.role) {
+        params.push(role); sets.push(`role = $${params.length}`);
+        if (role === 'admin') sets.push('class_id = NULL'); // an admin is not tied to one class
+        changed.role = { from: before.role, to: role };
+      }
+    }
+
+    let emailChanged = false;
+    let normalizedEmail = before.email;
+    if (email !== undefined) {
+      normalizedEmail = String(email).trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || normalizedEmail.length > 255) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ success: false, error: 'Enter a valid email address.' });
+      }
+      if (normalizedEmail !== String(before.email).toLowerCase()) {
+        const dupStaff = await client.query('SELECT 1 FROM staff WHERE LOWER(email) = $1 AND id <> $2', [normalizedEmail, before.id]);
+        if (dupStaff.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({ success: false, error: 'Another staff account already uses this email.' });
+        }
+        const dupSchool = await client.query('SELECT 1 FROM schools WHERE LOWER(email) = $1', [normalizedEmail]);
+        if (dupSchool.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({ success: false, error: 'This email belongs to a school account.' });
+        }
+        const dupInvite = await client.query(
+          "SELECT 1 FROM staff_invite_codes WHERE LOWER(email) = $1 AND status = 'pending'", [normalizedEmail]
+        );
+        if (dupInvite.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({ success: false, error: 'This email has a pending staff invite. Revoke it first.' });
+        }
+        emailChanged = true;
+        params.push(normalizedEmail); sets.push(`email = $${params.length}`);
+        changed.email = { from: before.email, to: normalizedEmail };
+      }
+    }
+
+    if (sets.length === 0) {
+      await client.query('ROLLBACK');
+      return res.json({ success: true, message: 'Nothing changed.', data: before });
+    }
+
+    // Never logged in? Their temporary password went to the old address.
+    let newTempPassword = null;
+    if (emailChanged && before.status === 'password_reset_required') {
+      newTempPassword = generateTempPassword();
+      params.push(await bcrypt.hash(newTempPassword, 10));
+      sets.push(`password_hash = $${params.length}`);
+      sets.push('force_password_change = true');
+    }
+
+    sets.push('updated_at = NOW()');
+    params.push(before.id, req.user.schoolId);
+    const updated = await client.query(
+      `UPDATE staff SET ${sets.join(', ')} WHERE id = $${params.length - 1} AND school_id = $${params.length}
+       RETURNING ${publicStaffFields}`,
+      params
+    );
+    await client.query('COMMIT');
+
+    const { actorType, actorStaffId } = actorInfo(req);
+    await logStaffAudit({
+      schoolId: req.user.schoolId, actorType, actorStaffId,
+      action: 'staff.updated', targetStaffId: before.id,
+      details: { changed, credentialsReissued: !!newTempPassword },
+    });
+
+    // Notifications are best effort: a mail problem must not undo the edit.
+    let emailNote = '';
+    if (emailChanged) {
+      try {
+        const school = await pool.query('SELECT name FROM schools WHERE id = $1', [req.user.schoolId]);
+        const schoolName = school.rows[0]?.name || 'your school';
+        if (newTempPassword) {
+          await sendMail(normalizedEmail, `Your Sabino Edu login for ${schoolName}`, `
+            <div style="font-family: sans-serif; border: 1px solid #ddd; padding: 20px; max-width: 480px; margin: auto;">
+              <h2 style="color: #333;">Your Sabino Edu login</h2>
+              <p>Your account for <strong>${schoolName}</strong> now uses this email address. Use these temporary credentials to log in; you will be asked to set your own password:</p>
+              <p><strong>Email:</strong> ${normalizedEmail}<br/><strong>Temporary password:</strong> ${newTempPassword}</p>
+            </div>`);
+          emailNote = ' A new temporary password was emailed to the new address.';
+        } else {
+          const notice = (to, text) => sendMail(to, `Your Sabino Edu login email was changed`, `
+            <div style="font-family: sans-serif; border: 1px solid #ddd; padding: 20px; max-width: 480px; margin: auto;">
+              <h2 style="color: #333;">Login email changed</h2><p>${text}</p>
+              <p style="color: #888; font-size: 13px;">Your password has not changed. If you did not expect this, contact your school administrator.</p>
+            </div>`);
+          await notice(normalizedEmail, `The login email for your <strong>${schoolName}</strong> account is now <strong>${normalizedEmail}</strong>.`);
+          await notice(before.email, `The login email for your <strong>${schoolName}</strong> account was changed from this address to <strong>${normalizedEmail}</strong>. Use the new address to log in.`);
+          emailNote = ' Both the old and new addresses were notified.';
+        }
+      } catch (mailErr) {
+        console.error('Warning [staff-management] failed to send email-change notice:', mailErr.message);
+        emailNote = newTempPassword ? ' The email could not be sent - share the temporary password manually.' : '';
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Details updated.${emailNote}`,
+      data: {
+        admin: updated.rows[0],
+        // shown once so the owner can pass it on if the email does not arrive
+        ...(newTempPassword ? { temporaryPassword: newTempPassword } : {}),
+      },
+    });
+  } catch (error) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* ignore */ }
+    if (error.code === '23505') {
+      return res.status(409).json({ success: false, error: 'Another staff account already uses this email.' });
+    }
+    console.error('❌ [staff-management] update error:', error.message);
+    res.status(500).json({ success: false, error: 'Failed to update staff details.' });
+  } finally {
+    client.release();
+  }
+});
+
+/**
  * @route   PATCH /api/staff/admins/:staffId/deactivate
  * @desc    Revoke an admin's access without deleting their record.
  *          Owner-only — hierarchy rule.
@@ -529,7 +744,7 @@ router.patch('/admins/:staffId/reactivate', authMiddleware.requireOwner, async (
  *          remove the assignment — e.g. a teacher leaving the class
  *          mid-term shouldn't stay locked to it.
  */
-router.patch('/admins/:staffId/class', authMiddleware.requireOwner, async (req, res) => {
+router.patch('/admins/:staffId/class', ownerOrAdminForTeacher, async (req, res) => {
   try {
     const { classId, className, clear } = req.body || {};
 

@@ -134,6 +134,16 @@ async function ensureStaffTables() {
         console.warn('⚠️  [staff-onboarding] Could not add classes(school_id, class_name) unique constraint:', constraintErr.message);
       }
     }
+
+    // One login email = one account, enforced by the database itself
+    // (database/migrations/2026_11_unique_emails.sql). Best effort and
+    // idempotent, so a database that never ran the migration still gets it.
+    try {
+      const sqlPath = require('path').join(__dirname, '../../database/migrations/2026_11_unique_emails.sql');
+      await pool.query(require('fs').readFileSync(sqlPath, 'utf8'));
+    } catch (guardErr) {
+      console.warn('⚠️  [staff-onboarding] Could not install the duplicate-email protection:', guardErr.message);
+    }
   })();
 
   return tablesReadyPromise;

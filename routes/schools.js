@@ -1248,4 +1248,51 @@ router.post('/push-token', authMiddleware.authenticateToken, async (req, res) =>
   }
 });
 
+/**
+ * @route   GET /api/schools/subscription-info
+ * @desc    Where the school stands: paid, free trial (unpaid) or expired.
+ *          Not behind checkSubscription on purpose - an expired school must be
+ *          able to see this too. The app uses it for the "Free trial - N days
+ *          left - Subscribe now" banner and the pricing screen wording.
+ * @access  Private (school / staff token)
+ */
+router.get('/subscription-info', authMiddleware.authenticateToken, authMiddleware.requireSchool, async (req, res) => {
+  try {
+    const schoolId = req.user.schoolId;
+    let row;
+    try {
+      const r = await pool.query(
+        `SELECT payment_status, subscription_expiry,
+                COALESCE(is_trial = true AND subscription_expiry IS NOT DISTINCT FROM trial_ends_at, false) AS unpaid_trial
+           FROM schools WHERE id = $1`,
+        [schoolId]
+      );
+      row = r.rows[0];
+    } catch (e) {
+      if (e.code !== '42703') throw e; // trial columns not migrated yet
+      const r = await pool.query('SELECT payment_status, subscription_expiry, false AS unpaid_trial FROM schools WHERE id = $1', [schoolId]);
+      row = r.rows[0];
+    }
+    if (!row) return res.status(404).json({ success: false, error: 'School not found.' });
+
+    const expiry = row.subscription_expiry ? new Date(row.subscription_expiry) : null;
+    const msLeft = expiry ? expiry.getTime() - Date.now() : 0;
+    const active = ['completed', 'grace_period'].includes(row.payment_status) && msLeft > 0;
+    res.json({
+      success: true,
+      data: {
+        status: active ? row.payment_status : (row.payment_status === 'pending' ? 'pending' : 'expired'),
+        expiresAt: expiry ? expiry.toISOString() : null,
+        daysLeft: active ? Math.max(0, Math.ceil(msLeft / 86400000)) : 0,
+        hoursLeft: active ? Math.max(0, Math.floor(msLeft / 3600000)) : 0,
+        // true only while the school is on the free trial and has not paid yet
+        isTrial: !!(row.unpaid_trial && active),
+      },
+    });
+  } catch (err) {
+    console.error('subscription-info error:', err.message);
+    res.status(500).json({ success: false, error: 'Could not load subscription details.' });
+  }
+});
+
 module.exports = router;

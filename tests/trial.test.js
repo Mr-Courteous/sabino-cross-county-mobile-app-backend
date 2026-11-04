@@ -33,6 +33,15 @@ const pool = require('../database/db');
   assert.strictEqual(row.is_trial, true); assert.ok(row.trial_started_at);
   ok('new school: completed + expiry 3 days out, trial recorded');
 
+  // 1b. the app asks where the school stands (banner + pricing wording)
+  const jwt = require('jsonwebtoken');
+  const t1 = jwt.sign({ id: 1, schoolId: 1, type: 'school', countryId: 1 }, process.env.JWT_SECRET);
+  const info = async (tok) => { const r = await fetch(`${base}/api/schools/subscription-info`, { headers: { Authorization: `Bearer ${tok}` } }); return { status: r.status, ...(await r.json()) }; };
+  let si = await info(t1);
+  assert.strictEqual(si.status, 200, JSON.stringify(si));
+  assert.strictEqual(si.data.isTrial, true); assert.strictEqual(si.data.daysLeft, 3); assert.strictEqual(si.data.status, 'completed');
+  ok('subscription-info: new school is on an unpaid 3-day trial');
+
   // 2. checkSubscription lets them in, then locks them out when the 3 days pass
   const checkSubscription = require('../middleware/checkSubscription');
   const run = async () => { let out = {}; await checkSubscription({ user: { schoolId: 1 } }, { status(c) { out.code = c; return this; }, json(j) { out.body = j; } }, () => { out.next = true; }); return out; };
@@ -62,6 +71,14 @@ const pool = require('../database/db');
   await pool.query(`UPDATE schools SET subscription_expiry = now() + interval '4 months' WHERE id=$1`, [sid]); // what a payment does
   assert.strictEqual(await unpaid(), false);
   ok('trial is flagged unpaid until a payment changes the expiry; payment shortcuts honour it');
+
+  // 6. after paying: no longer a trial, shows the paid term; expired school sees 'expired'
+  const t3 = jwt.sign({ id: sid, schoolId: sid, type: 'school', countryId: 1 }, process.env.JWT_SECRET);
+  si = await info(t3);
+  assert.strictEqual(si.data.isTrial, false); assert.ok(si.data.daysLeft > 100, 'paid for ~4 months: ' + si.data.daysLeft);
+  si = await info(t1); // school 1 was expired in step 2
+  assert.strictEqual(si.data.status, 'expired'); assert.strictEqual(si.data.isTrial, false);
+  ok('subscription-info: paid school is not a trial; lapsed school reports expired');
 
   server.close(); await pool.end();
   console.log('\nTRIAL TESTS PASSED');

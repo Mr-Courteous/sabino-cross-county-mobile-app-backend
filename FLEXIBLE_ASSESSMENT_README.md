@@ -128,3 +128,55 @@ Notes
 * Report cards: web = Download PDF + e-mail; phone app = e-mail to the parent's address (same as the student screen does).
 * Not changed: students' own logins, school/teacher logins.
 * Tests: `tests/parents.test.js` (register/OTP, linking, isolation between parents, read-only, expiry, school controls).
+
+
+---
+# Paying during the free trial
+A school can subscribe at ANY point of its 3-day trial; it does not have to wait.
+
+* Dashboard (owner/admin): a banner shows **"Free trial - N days left - SUBSCRIBE"** (turns red on the last day).
+  It opens the pricing screen, which now says "Subscribe Now / Free trial - N days left" and has a
+  "Continue my free trial" link. Phone: Google Play (RevenueCat); web / institutional: Flutterwave billing portal.
+* The paid plan starts the moment payment is confirmed (Flutterwave: 4 months from that day). The unused part of the
+  trial is NOT added on top - tell me if you'd rather add it (easy for Flutterwave; Google Play sets its own dates).
+* `GET /api/schools/subscription-info` -> `{ status, expiresAt, daysLeft, hoursLeft, isTrial }` (works for expired schools too).
+* `routes/payments.js` (done earlier): the "already active" shortcuts ignore an UNPAID trial, so the payment is never skipped.
+  Confirming the same payment twice does not extend the plan twice.
+* Tests: `tests/pay-during-trial.test.js` (Flutterwave mocked) and `tests/trial.test.js`.
+
+
+---
+# Editing staff details (owner only)
+`PATCH /api/staff/admins/:staffId`  body `{ fullName?, email?, phone? }` (phone `""` clears it).
+App: Dashboard -> Manage Staff -> the pencil on a staff card -> **Edit Staff Details**.
+
+* **Owner:** can edit any staff account, including changing a role (admin <-> class teacher; applies from
+  their next login, and an admin has no class). **Full admin:** can edit class teachers (name, email, phone,
+  class) but not other admins and not roles. Class teachers cannot edit anyone.
+* The email is the staff member's login, so:
+  - it cannot clash with another staff account, any school owner account, or a pending invite;
+  - **never logged in yet** -> their temporary password went to the old address, so a NEW temporary password is
+    created and e-mailed to the new address (also shown once to the owner in case the mail doesn't arrive);
+  - **already using the account** -> password unchanged; both the old and the new address get a notice.
+* Every edit is recorded in the staff audit log ("edited a staff member's details").
+* Not covered: pending *invites* (revoke and re-invite to change those). Staff already logged in keep their current
+  session until it expires; the new email applies from their next login.
+* Test: `tests/staff-edit.test.js`.
+
+
+---
+# Subscription entry + no duplicate emails
+**Where schools pay now:** the payment page no longer appears on its own. Dashboard -> **Subscription**
+(owner only) shows "Free trial - N days left - tap to pay" / "Active until <date>" / "Expired - tap to renew".
+Tapping it opens the pricing screen only when there is something to pay for (trial or expired). A paid, active plan
+just shows its end date, because the backend does not apply a second payment while a paid plan is still running.
+The plan is always exactly 4 months from the payment date; unused trial days are NOT added.
+(After the trial the usual "expired -> pricing" redirect still applies.)
+
+**One login email = one account, enforced by the database:**
+1. `node scripts/run-unique-emails-migration.js` (repeatable; also installs itself when the staff tables are created)
+2. staff vs staff: unique index on `LOWER(email)` (any letter case); staff vs school owner: triggers in both directions.
+   Pending-invite and school checks also exist in the API for friendly messages.
+3. If old data already has case-only duplicate staff emails the index is skipped with a notice (nothing is deleted);
+   the triggers still block every new or changed email. Fix those rows, then run the script again.
+4. Parent accounts are a separate login area and are not included (one person can be a teacher and a parent).
