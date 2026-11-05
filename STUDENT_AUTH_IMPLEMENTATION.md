@@ -43,12 +43,12 @@ Successfully implemented a complete student authentication system with the follo
 - **Endpoint**: `POST /api/students/login`
 - **Purpose**: Authenticates students and provides access token
 - **Required Fields**:
-  - `email` (String)
+  - `identifier` (String) - student email or registration number (`email` is accepted for older clients)
   - `password` (String)
 - **Response**: Returns student data (without password_hash) and JWT token
 - **Features**:
-  - Validates email and password
-  - Checks if password_hash exists (handles bulk-imported students)
+  - Validates email or registration number and password
+  - Initializes older staff-created accounts without a password hash when the default password is used
   - Returns school name along with student data
   - JWT token includes: `studentId`, `schoolId`, and `type: 'student'`
 
@@ -82,10 +82,22 @@ Successfully implemented a complete student authentication system with the follo
 - **Endpoint**: `POST /api/students/bulk`
 - **Authentication**: Requires admin JWT token
 - **Changes**:
-  - Now auto-generates password "1234567890" for all imported students
+  - Sets the default password "1234567890" for all imported students
   - Password is hashed using bcrypt before storage
   - Students can login immediately using their email and "1234567890"
   - Students can then change their password via the profile update endpoint
+
+### Single Student Creation
+- School staff-created students also receive the default password `1234567890`.
+- Students can sign in with their registration number (or email, when provided).
+- Student Portal → Preferences includes a change-password form.
+- Older staff-created accounts without a password hash initialize on first login with the default password.
+
+### Single Student Creation
+- School staff-created students also receive the default password `1234567890`.
+- Students can sign in with their registration number (or email, when provided).
+- The Student Portal Preferences screen lets them change the default after signing in.
+- Older staff-created accounts without a password hash are initialized with the default on their first login.
 
 ### All Other Admin Routes
 Added authentication middleware to all admin-only routes:
@@ -143,7 +155,7 @@ POST /api/students/login
 Content-Type: application/json
 
 {
-  "email": "john.doe@example.com",
+  "identifier": "SCH-ABC123",
   "password": "securePassword123"
 }
 ```
@@ -179,7 +191,7 @@ Content-Type: application/json
   "academicSession": "2024/2025"
 }
 ```
-**Note**: All bulk-imported students will have password "1234567890" by default.
+**Note**: All staff-created students will have password "1234567890" by default. Share it together with the student's registration number and encourage them to change it after signing in.
 
 ## Migration Required
 

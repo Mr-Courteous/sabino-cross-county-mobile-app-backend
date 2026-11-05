@@ -41,6 +41,7 @@ const loginLimiter = rateLimit({
 
 // Configure multer for memory storage
 const upload = multer({ storage: multer.memoryStorage() });
+const DEFAULT_STUDENT_PASSWORD = '1234567890';
 
 // Email transporter
 const transporter = nodemailer.createTransport({
@@ -489,19 +490,19 @@ router.post('/register', async (req, res) => {
  */
 router.post('/login', loginLimiter, async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const identifier = String(req.body?.identifier || req.body?.email || '').trim();
+    const password = req.body?.password;
 
-    if (!email || !password) {
+    if (!identifier || !password) {
       return res.status(400).json({
         success: false,
-        error: 'Email and password are required'
+        error: 'Email or registration number and password are required'
       });
     }
 
-    // Find student by email
-      const normalizedEmail = email.trim().toLowerCase();
-      const result = await pool.query(
-        `SELECT 
+    const normalizedIdentifier = identifier.toLowerCase();
+    const result = await pool.query(
+      `SELECT 
           s.id, s.school_id, s.first_name, s.last_name, s.email, 
           s.registration_number, s.password_hash, s.phone, s.date_of_birth, 
           s.gender, s.photo, s.address,
@@ -512,25 +513,43 @@ router.post('/login', loginLimiter, async (req, res) => {
           sc.email as school_email
         FROM students s
         JOIN schools sc ON s.school_id = sc.id
-        WHERE s.email = $1`,
-        [normalizedEmail]
-      );
+        WHERE LOWER(COALESCE(s.email, '')) = $1
+           OR LOWER(COALESCE(s.registration_number, '')) = $1
+        LIMIT 2`,
+      [normalizedIdentifier]
+    );
 
-    if (result.rows.length === 0) {
+    // Refuse ambiguous identifiers rather than ever authenticating the wrong student.
+    if (result.rows.length !== 1) {
       return res.status(401).json({
         success: false,
-        error: 'Invalid email or password'
+        error: 'Invalid email/registration number or password'
       });
     }
 
     const student = result.rows[0];
 
-    // Check if password_hash exists (for students imported via bulk)
+    // Staff-created records from older versions may not have a password hash.
+    // Let those students activate once with the same default used for new records.
     if (!student.password_hash) {
-      return res.status(401).json({
-        success: false,
-        error: 'Account not activated. Please contact your school administrator.'
-      });
+      if (password !== DEFAULT_STUDENT_PASSWORD) {
+        return res.status(401).json({
+          success: false,
+          error: 'Invalid email/registration number or password'
+        });
+      }
+
+      const defaultHash = await bcrypt.hash(DEFAULT_STUDENT_PASSWORD, 10);
+      const activation = await pool.query(
+        'UPDATE students SET password_hash = $1 WHERE id = $2 AND password_hash IS NULL RETURNING password_hash',
+        [defaultHash, student.id]
+      );
+      if (activation.rows.length > 0) {
+        student.password_hash = activation.rows[0].password_hash;
+      } else {
+        const latest = await pool.query('SELECT password_hash FROM students WHERE id = $1', [student.id]);
+        student.password_hash = latest.rows[0]?.password_hash;
+      }
     }
 
     // Verify password
@@ -539,7 +558,7 @@ router.post('/login', loginLimiter, async (req, res) => {
     if (!isValidPassword) {
       return res.status(401).json({
         success: false,
-        error: 'Invalid email or password'
+        error: 'Invalid email/registration number or password'
       });
     }
 
@@ -798,23 +817,30 @@ router.put('/profile', authMiddleware.authenticateToken, authMiddleware.requireS
       photo = req.body.photo;
     }
 
-    await client.query('BEGIN');
-
-    // If changing password, verify current password
     if (newPassword) {
+      const passwordValidation = validatePassword(newPassword);
+      if (!passwordValidation.isValid) {
+        return res.status(400).json({ success: false, error: passwordValidation.error });
+      }
       if (!currentPassword) {
         return res.status(400).json({
           success: false,
           error: 'Current password is required to set a new password'
         });
       }
+    }
 
+    await client.query('BEGIN');
+
+    // If changing password, verify current password
+    if (newPassword) {
       const studentResult = await client.query(
         'SELECT password_hash FROM students WHERE id = $1',
         [studentId]
       );
 
       if (studentResult.rows.length === 0) {
+        await client.query('ROLLBACK');
         return res.status(404).json({
           success: false,
           error: 'Student not found'
@@ -824,6 +850,7 @@ router.put('/profile', authMiddleware.authenticateToken, authMiddleware.requireS
       const isValidPassword = await bcrypt.compare(currentPassword, studentResult.rows[0].password_hash);
 
       if (!isValidPassword) {
+        await client.query('ROLLBACK');
         return res.status(401).json({
           success: false,
           error: 'Current password is incorrect'
@@ -1203,10 +1230,9 @@ router.post('/bulk', authMiddleware.authenticateToken, authMiddleware.requireSch
         throw new Error(`Row ${index + 1}: Class ID ${s.classId} is invalid or does not belong to your school.`);
       }
 
-      // Create Student with auto-generated password "1234567890"
+      // Create Student with the standard default student password.
       const studentNum = s.studentNumber || `${schoolPrefix}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-      const defaultPassword = '1234567890';
-      const passwordHash = await bcrypt.hash(defaultPassword, 10);
+      const passwordHash = await bcrypt.hash(DEFAULT_STUDENT_PASSWORD, 10);
 
       // Normalize email exactly as the login endpoint does (trim + lowercase) so the
       // stored value always matches what a student types at login. Without this, a
@@ -1317,15 +1343,16 @@ router.post('/', authMiddleware.authenticateToken, authMiddleware.requireSchool,
     await client.query('BEGIN');
 
     const finalRegNumber = registrationNumber || `STU-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    const passwordHash = await bcrypt.hash(DEFAULT_STUDENT_PASSWORD, 10);
 
     // Insert student
     const studentResult = await client.query(
       `INSERT INTO students (
-        school_id, first_name, last_name, email, 
+        school_id, first_name, last_name, email, password_hash,
         registration_number, gender, date_of_birth, phone, photo
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      RETURNING *`,
-      [schoolId, firstName, lastName, email || null, finalRegNumber,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING id, school_id, first_name, last_name, email, registration_number, gender, date_of_birth, phone, photo, created_at`,
+      [schoolId, firstName, lastName, email ? email.trim().toLowerCase() : null, passwordHash, finalRegNumber,
         gender || null, dateOfBirth || null, phone || null, photo || null]
     );
 
