@@ -92,7 +92,9 @@ router.post('/initiate', authMiddleware.authenticateToken, async (req, res) => {
           school_id: schoolId,
           tx_ref,
         },
-        payment_options: 'card,banktransfer,ussd,mobilemoney,opay,palmpay',
+        // Use only Flutterwave-supported identifiers. `mobilemoney` and
+        // `palmpay` are not valid option names for this API; OPay is supported.
+        payment_options: 'card,banktransfer,ussd,opay',
       },
       {
         headers: {
