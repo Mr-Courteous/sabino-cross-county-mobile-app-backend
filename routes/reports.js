@@ -1496,6 +1496,171 @@ router.get('/preview/student-grades/:enrollmentId', async (req, res) => {
 
 
 
+router.get('/pdf/bulk', checkSubscription, async (req, res) => {
+  try {
+    const schoolId = req.user?.schoolId || req.user?.school_id;
+    const termInt = parseInt(req.query.term, 10);
+    const sessionIdInt = parseInt(req.query.sessionId, 10);
+    const enrollmentIds = String(req.query.enrollmentIds || '')
+      .split(',')
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value > 0);
+    const uniqueIds = [...new Set(enrollmentIds)];
+
+    if (req.user?.type !== 'school' || !schoolId) {
+      return res.status(403).json({ success: false, error: 'Only school staff can download bulk report cards.' });
+    }
+    if (!termInt || !sessionIdInt || uniqueIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'enrollmentIds, term, and sessionId are required.' });
+    }
+    if (uniqueIds.length > 100) {
+      return res.status(400).json({ success: false, error: 'Select no more than 100 students at a time.' });
+    }
+
+    const result = await pool.query(
+      `SELECT e.id AS enrollment_id,
+              s.first_name, s.last_name, s.registration_number AS admission_number,
+              s.photo AS photo_url, sch.name AS school_name,
+              pref.logo_url, pref.stamp_url, pref.theme_color, pref.header_text,
+              c.class_name,
+              COALESCE(ay.session_name, '') AS session_name,
+              sc.id AS score_id, sc.subject_id, sc.components, sc.template_snapshot, sc.grading_snapshot,
+              COALESCE(sub.subject_name, 'Unknown Subject') AS subject_name,
+              COALESCE(sc.ca1_score, 0) AS ca1_score,
+              COALESCE(sc.ca2_score, 0) AS ca2_score,
+              COALESCE(sc.ca3_score, 0) AS ca3_score,
+              COALESCE(sc.ca4_score, 0) AS ca4_score,
+              COALESCE(sc.exam_score, 0) AS exam_score,
+              COALESCE(sc.total_score, 0) AS total_score
+         FROM enrollments e
+         JOIN students s ON s.id = e.student_id
+         JOIN schools sch ON sch.id = e.school_id
+         LEFT JOIN school_preferences pref ON pref.school_id = sch.id
+         LEFT JOIN classes c ON c.id = e.class_id
+         LEFT JOIN academic_years ay ON ay.id = e.session_id
+         LEFT JOIN scores sc ON sc.enrollment_id = e.id
+          AND sc.term = $4 AND sc.session_id = $3 AND sc.school_id = $2
+         LEFT JOIN global_subjects sub ON sub.id = sc.subject_id
+        WHERE e.id = ANY($1::int[]) AND e.school_id = $2 AND e.session_id = $3
+        ORDER BY s.last_name ASC, s.first_name ASC, sub.subject_name ASC`,
+      [uniqueIds, schoolId, sessionIdInt, termInt]
+    );
+
+    const grouped = new Map();
+    for (const row of result.rows) {
+      if (!grouped.has(row.enrollment_id)) grouped.set(row.enrollment_id, { student: row, scores: [] });
+      if (row.score_id) grouped.get(row.enrollment_id).scores.push(row);
+    }
+    if (grouped.size !== uniqueIds.length) {
+      return res.status(404).json({ success: false, error: 'One or more selected students are not in this school session.' });
+    }
+
+    const remarksResult = await pool.query(
+      `SELECT enrollment_id, ai_remark FROM report_remarks
+        WHERE enrollment_id = ANY($1::int[]) AND term = $2 AND session_id = $3`,
+      [uniqueIds, termInt, sessionIdInt]
+    );
+    const remarks = new Map(remarksResult.rows.map((row) => [row.enrollment_id, row.ai_remark]));
+
+    const doc = new PDFDocument({ autoFirstPage: false, size: 'A4' });
+    const chunks = [];
+    const pdfReady = new Promise((resolve, reject) => {
+      doc.on('data', (chunk) => chunks.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+    });
+
+    for (const { student, scores } of grouped.values()) {
+      doc.addPage();
+      const themeColor = student.theme_color && /^#[0-9a-f]{6}$/i.test(student.theme_color.trim())
+        ? student.theme_color.trim()
+        : '#2196F3';
+
+      doc.fillColor('#ffffff').rect(0, 0, 595, 60).fill();
+      doc.fillColor(themeColor).rect(0, 55, 595, 5).fill();
+      doc.fontSize(22).fillColor('#1a1a1a').font('Helvetica-Bold').text(student.school_name || 'School Name', 50, 18);
+      doc.fontSize(9).fillColor('#666').font('Helvetica').text(student.header_text || '', 50, 42);
+      doc.fillColor('#f5f5f5').rect(500, 8, 50, 44).fill();
+      doc.strokeColor('#ddd').lineWidth(1).rect(500, 8, 50, 44).stroke();
+      await tryLoadImage(doc, student.logo_url, 503, 12, 44, 36, 'BULK_LOGO');
+
+      doc.fillColor('#f0f0f0').rect(50, 75, 55, 55).fill();
+      doc.strokeColor(themeColor).lineWidth(2).rect(50, 75, 55, 55).stroke();
+      await tryLoadImage(doc, student.photo_url, 53, 78, 49, 49, 'BULK_STUDENT_PHOTO');
+      const studentName = `${student.first_name || ''} ${student.last_name || ''}`.trim();
+      const sessionName = student.session_name || `Session ${sessionIdInt}`;
+      doc.fontSize(15).fillColor('#1a1a1a').font('Helvetica-Bold').text(studentName || 'Student', 115, 80);
+      doc.fontSize(10).fillColor('#555').font('Helvetica').text(`Class: ${student.class_name || 'N/A'}`, 115, 100);
+      doc.text(`Term: ${termInt}  |  ${sessionName}`, 115, 115);
+      doc.fontSize(9).fillColor(themeColor).font('Helvetica-Bold').text(`Adm No: ${student.admission_number || 'N/A'}`, 115, 129);
+
+      let tableY = 150;
+      const tableX = 50;
+      const tableWidth = 500;
+      const uniqueSubjects = new Map();
+      scores.forEach((score) => {
+        if (!uniqueSubjects.has(score.subject_name)) uniqueSubjects.set(score.subject_name, score);
+      });
+      const reportRows = [...uniqueSubjects.values()];
+      const customLayout = reportRows.length
+        ? await loadReportLayout(reportRows, schoolId, student.enrollment_id, termInt, sessionIdInt)
+        : { custom: false };
+
+      if (customLayout.custom) {
+        tableY = drawCustomResultsTable(doc, { x: tableX, y: tableY, width: tableWidth, layout: customLayout, themeColor });
+      } else {
+        doc.fillColor(themeColor).rect(tableX, tableY, tableWidth, 20).fill();
+        doc.fillColor('#ffffff').fontSize(10).font('Helvetica-Bold');
+        doc.text('SUBJECT', tableX + 10, tableY + 5, { width: 200 });
+        doc.text('C.A.', tableX + 220, tableY + 5, { width: 60, align: 'center' });
+        doc.text('EXAM', tableX + 310, tableY + 5, { width: 60, align: 'center' });
+        doc.text('TOTAL', tableX + 410, tableY + 5, { width: 80, align: 'center' });
+        tableY += 20;
+
+        if (reportRows.length === 0) {
+          doc.fillColor('#fafafa').rect(tableX, tableY, tableWidth, 50).fill();
+          doc.fontSize(11).fillColor('#888').font('Helvetica').text('No scores recorded for this term and session.', tableX, tableY + 18, { width: tableWidth, align: 'center' });
+          tableY += 50;
+        } else {
+          doc.fontSize(10);
+          reportRows.forEach((score, index) => {
+            doc.fillColor(index % 2 === 0 ? '#fff' : '#f5f5f5').rect(tableX, tableY, tableWidth, 18).fill();
+            const ca = Math.round(Number(score.ca1_score || 0) + Number(score.ca2_score || 0) + Number(score.ca3_score || 0) + Number(score.ca4_score || 0));
+            const exam = Math.round(Number(score.exam_score || 0));
+            doc.fillColor('#222').font('Helvetica').text(score.subject_name || '-', tableX + 10, tableY + 4, { width: 200 });
+            doc.text(String(ca), tableX + 220, tableY + 4, { width: 60, align: 'center' });
+            doc.text(String(exam), tableX + 310, tableY + 4, { width: 60, align: 'center' });
+            doc.font('Helvetica-Bold').text(String(ca + exam), tableX + 410, tableY + 4, { width: 80, align: 'center' });
+            doc.strokeColor('#ddd').lineWidth(0.5).moveTo(tableX, tableY + 18).lineTo(tableX + tableWidth, tableY + 18).stroke();
+            tableY += 18;
+          });
+        }
+        doc.strokeColor(themeColor).lineWidth(1).rect(tableX, 150, tableWidth, tableY - 150).stroke();
+      }
+
+      const remarkY = tableY + 15;
+      doc.fillColor('#f9f9f9').rect(50, remarkY, 500, 50).fill();
+      doc.strokeColor(themeColor).lineWidth(1).rect(50, remarkY, 500, 50).stroke();
+      doc.fontSize(10).fillColor(themeColor).font('Helvetica-Bold').text("Principal's Comment", 60, remarkY + 5);
+      doc.fontSize(9).fillColor('#444').font('Helvetica').text(remarks.get(student.enrollment_id) || (scores.length ? 'Keep up the good work.' : 'No academic scores have been recorded for this student in the selected term.'), 60, remarkY + 20, { width: 420 });
+      await tryLoadImage(doc, student.stamp_url, 510, remarkY + 5, 35, 35, 'BULK_STAMP');
+      const footerY = tableY + 70;
+      doc.strokeColor(themeColor).lineWidth(2).moveTo(50, footerY).lineTo(550, footerY).stroke();
+      doc.fontSize(8).fillColor('#888').text(`Generated: ${new Date().toLocaleDateString()}`, 50, footerY + 8, { align: 'center', width: 500 });
+      doc.fontSize(7).fillColor('#aaa').text('School Management System', 50, footerY + 20, { align: 'center', width: 500 });
+    }
+
+    doc.end();
+    const pdfBuffer = await pdfReady;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="Selected_Report_Cards_Term${termInt}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (error) {
+    console.error('[PDF bulk] Route error:', error.message, error.stack);
+    if (!res.headersSent) res.status(500).json({ success: false, error: 'Could not generate the selected report cards.' });
+  }
+});
+
 router.get('/pdf/:enrollmentId', checkSubscription, async (req, res) => {
   try {
     const { enrollmentId } = req.params;
